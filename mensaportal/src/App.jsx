@@ -1,0 +1,1511 @@
+import React, { useState, useEffect } from 'react';
+import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
+import { 
+  CreditCard, 
+  Wallet, 
+  History, 
+  User, 
+  Plus, 
+  CheckCircle2, 
+  XCircle, 
+  LogOut, 
+  Utensils, 
+  CalendarDays,
+  Smartphone,
+  Banknote,
+  ShieldCheck,
+  AlertCircle,
+  ChevronRight,
+  ChevronLeft,
+  ShoppingCart,
+  Landmark,
+  Loader2
+} from 'lucide-react';
+
+// Map für dynamisches Zuweisen von Icons aus dem Backend
+const IconMap = {
+  Utensils, Wallet, Banknote, CalendarDays, CreditCard
+};
+
+// --- PAYPAL KONFIGURATION ---
+const paypalOptions = {
+  clientId: "***REMOVED***",
+  currency: "EUR",
+  intent: "capture"
+};
+
+// --- COMPONENTS ---
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+        <div className="flex justify-between items-center p-6 border-b border-slate-100 shrink-0">
+          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
+            <XCircle size={24} />
+          </button>
+        </div>
+        <div className="p-6 overflow-y-auto">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- DYNAMISCHE CHECKOUT KOMPONENTE (Paypal/Klarna/Manuell) ---
+const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManualSubmit, onSucceed, onProcessing, onFinished, isLoading, user }) => {
+  
+  // Szenario 1: Alles über Guthaben abgedeckt
+  if (amount <= 0) {
+    return (
+      <button 
+        disabled={isLoading}
+        onClick={() => onManualSubmit('Guthaben')}
+        className="w-full py-4 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-all bg-blue-600 text-white hover:bg-blue-700 shadow-sm disabled:opacity-50"
+      >
+        {isLoading && <Loader2 className="animate-spin" size={20} />}
+        Kostenpflichtig bestellen (Guthaben)
+      </button>
+    );
+  }
+
+  // Szenario 2: Banküberweisung (Vorkasse)
+  if (paymentMethod === 'ueberweisung') {
+    return (
+      <div className="space-y-4 animate-in fade-in duration-300">
+        <div className="bg-blue-50 text-blue-900 p-5 rounded-xl text-sm border border-blue-200 shadow-inner">
+          <p className="font-bold mb-3 flex items-center gap-2"><Landmark size={18}/> Bitte überweise den Betrag an:</p>
+          <div className="space-y-2 font-mono">
+            <p className="flex justify-between"><span>Empfänger:</span> <strong>Mensaverein Ho'gau e.V.</strong></p>
+            <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
+            <p className="flex justify-between"><span>BIC:</span> <strong>GENODE12345</strong></p>
+            <div className="mt-3 pt-3 border-t border-blue-200">
+              <p className="text-xs text-blue-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (WICHTIG):</p>
+              <p className="font-bold text-lg bg-white px-3 py-2 rounded border border-blue-100 text-center select-all shadow-sm">
+                {user.email}
+              </p>
+            </div>
+          </div>
+        </div>
+        <button 
+          disabled={isLoading}
+          onClick={() => onManualSubmit('Überweisung')}
+          className="w-full py-4 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-all bg-blue-600 text-white hover:bg-blue-700 shadow-sm disabled:opacity-50"
+        >
+          {isLoading && <Loader2 className="animate-spin" size={20} />}
+          Bestellung abschließen (Vorkasse)
+        </button>
+        <p className="text-xs text-slate-500 text-center">Dein Account wird aktualisiert, sobald das Geld eingegangen ist.</p>
+      </div>
+    );
+  }
+
+  // Szenario 3: PayPal & Klarna via SDK
+  return (
+    <div className="relative z-0 min-h-[150px] animate-in fade-in duration-300">
+      <PayPalButtons
+        forceReRender={[amount, paymentMethod]}
+        style={{ layout: "vertical", shape: "rect", color: paymentMethod === 'klarna' ? 'white' : 'gold' }}
+        fundingSource={paymentMethod}
+        createOrder={() => {
+          return fetch("/api/actions.php?action=create_paypal_order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount: amount, actionType: actionType, actionData: actionData }),
+          })
+          .then(res => res.json())
+          .then(orderData => {
+            if (orderData.id) {
+              return orderData.id;
+            } else {
+              throw new Error(orderData.message || "Fehler beim Erstellen der Order");
+            }
+          })
+          .catch(error => {
+            console.error("PayPal createOrder Fehler:", error);
+            alert(error.message || "Konnte keine Verbindung zu PayPal herstellen.");
+            throw error;
+          });
+        }}
+        onApprove={(data, actions) => {
+          if (onProcessing) onProcessing(); // Button deaktivieren & Lade-Spinner zeigen
+          return fetch("/api/actions.php?action=capture_paypal_order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ orderID: data.orderID })
+          })
+          .then(res => res.json())
+          .then(result => {
+            if (result.status === 'success') {
+              // Bei Erfolg direkt die Ansicht aktualisieren
+              onSucceed();
+            } else {
+              throw new Error(result.message || "Zahlung konnte nicht abgeschlossen werden.");
+            }
+          })
+          .catch(error => {
+            console.error("PayPal onApprove Fehler:", error);
+            alert(error.message || "Sorry, die Zahlung konnte nicht verarbeitet werden.");
+            throw error;
+          })
+          .finally(() => {
+            if (onFinished) onFinished(); // Lade-Spinner wieder aufheben
+          });
+        }}
+        onError={(err) => {
+          console.error("PayPal Error:", err);
+          alert("Es gab ein Problem bei der Zahlungsabwicklung.");
+        }}
+      />
+    </div>
+  );
+};
+
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); 
+  const [activeTab, setActiveTab] = useState('dashboard');
+  
+  // State für Ladeanimationen
+  const [isLoading, setIsLoading] = useState(false);         
+  const [isActionLoading, setIsActionLoading] = useState(false); 
+  const [isAuthLoading, setIsAuthLoading] = useState(false);     
+  
+  const [user, setUser] = useState(null);
+  const [transactions, setTransactions] = useState([]);
+  const [abos, setAbos] = useState([]);
+  const [cards, setCards] = useState([]);
+
+  // Pagination-State für Transaktionen
+  const [visibleTransactions, setVisibleTransactions] = useState(10);
+
+  // Auth States für Formulare
+  const [authData, setAuthData] = useState({ firstName: '', lastName: '', email: '', password: '', passwordConfirm: '' });
+  const [authError, setAuthError] = useState('');
+
+  // UI State für abgelaufene Abos
+  const [showExpiredAbos, setShowExpiredAbos] = useState(false);
+
+  const handleLogout = () => {
+    fetch('/api/data.php?action=logout', { credentials: 'include' })
+      .catch(err => console.error("Logout error", err))
+      .finally(() => {
+        setIsLoggedIn(false);
+        setUser(null);
+        setTransactions([]);
+        setAbos([]);
+        setCards([]);
+        setVisibleTransactions(10);
+      });
+  };
+
+  const fetchUserData = (showLiquid = false) => {
+    if (showLiquid) setIsLoading(true);
+    
+    fetch('/api/data.php?action=getData', { credentials: 'include' })
+      .then(response => {
+        if (!response.ok) throw new Error('Netzwerk-Antwort war nicht ok');
+        return response.json();
+      })
+      .then(data => {
+        if (data.status === 'success') {
+          setIsLoggedIn(true);
+          setUser(data.data.user);
+          setAbos(data.data.abos);
+          setCards(data.data.cards);
+          
+          const mappedTransactions = data.data.transactions.map(tx => ({
+            ...tx,
+            icon: IconMap[tx.iconName] || Wallet 
+          }));
+          setTransactions(mappedTransactions);
+        } else {
+          if (isLoggedIn) handleLogout();
+          if (data.message && data.status !== 'unauthorized') {
+             setAuthError(data.message);
+          }
+        }
+      })
+      .catch(err => {
+        console.error("Fehler beim API-Abruf.", err);
+        if (isLoggedIn) handleLogout();
+        setAuthError("Verbindung zum Server fehlgeschlagen. Bitte erneut einloggen.");
+      })
+      .finally(() => {
+        if (showLiquid) {
+          setTimeout(() => {
+            setIsLoading(false);
+          }, 1200);
+        }
+      });
+  };
+
+  useEffect(() => {
+    fetchUserData(false);
+  }, []);
+  
+  // Abo Shop State
+  const [aboStep, setAboStep] = useState(1);
+  const [aboPayment, setAboPayment] = useState('paypal');
+  const [shopData, setShopData] = useState({
+    type: null, 
+    days: [],
+    cardOption: 'existing', 
+    selectedHolderId: '',
+    newStudent: { firstName: '', lastName: '', class: '' },
+    useBalance: false
+  });
+  
+  // Modals state
+  const [isTopUpOpen, setIsTopUpOpen] = useState(false);
+  const [topUpStep, setTopUpStep] = useState('choose');
+  const [topUpAmount, setTopUpAmount] = useState(20);
+  const [topUpPayment, setTopUpPayment] = useState('paypal');
+
+  const [isOrderCardOpen, setIsOrderCardOpen] = useState(false);
+  const [orderCardStep, setOrderCardStep] = useState('form');
+  const [orderCardPayment, setOrderCardPayment] = useState('paypal');
+  const [newCardData, setNewCardData] = useState({ firstName: '', lastName: '', class: '', useBalance: false });
+
+  const [isToastOpen, setIsToastOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setIsToastOpen(true);
+    setTimeout(() => setIsToastOpen(false), 3000);
+  };
+
+  const handleLogin = (e) => {
+    if (e) e.preventDefault();
+    setAuthError('');
+    setIsAuthLoading(true);
+
+    fetch('/api/data.php?action=login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: authData.email, passwort: authData.password })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'success') {
+        setIsAuthLoading(false);
+        fetchUserData(true); 
+      } else {
+        setAuthError(data.message || 'Login fehlgeschlagen');
+        setIsAuthLoading(false);
+      }
+    })
+    .catch(() => {
+      setAuthError('Netzwerkfehler. Bitte Server prüfen.');
+      setIsAuthLoading(false);
+    });
+  };
+
+  const handleRegister = (e) => {
+    e.preventDefault();
+    setAuthError('');
+    
+    if (authData.password !== authData.passwordConfirm) {
+      setAuthError('Die Passwörter stimmen nicht überein.');
+      return;
+    }
+
+    setIsAuthLoading(true);
+    fetch('/api/data.php?action=register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        vorname: authData.firstName,
+        nachname: authData.lastName,
+        email: authData.email,
+        passwort: authData.password,
+        passwort2: authData.passwordConfirm
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'success') {
+        setIsAuthLoading(false);
+        handleLogin();
+      } else {
+        setAuthError(data.message || 'Registrierung fehlgeschlagen');
+        setIsAuthLoading(false);
+      }
+    })
+    .catch(() => {
+      setAuthError('Netzwerkfehler. Bitte Server prüfen.');
+      setIsAuthLoading(false);
+    });
+  };
+
+  // --- MANUELLE CHECKOUT CALLBACKS (Für Überweisung / Guthaben) ---
+
+  const handleManualTopUp = (method) => {
+    setIsActionLoading(true);
+    fetch('/api/actions.php?action=topup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ amount: Number(topUpAmount), paymentMethod: method })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if(data.status === 'success') {
+        showToast(`Die Aufladung über ${method} wurde initiiert.`);
+        setIsTopUpOpen(false);
+        fetchUserData(false);
+      } else {
+        showToast(data.message || 'Fehler beim Aufladen.');
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Verbindungsfehler. Bitte versuche es erneut.');
+    })
+    .finally(() => setIsActionLoading(false));
+  };
+
+  const handleManualOrderCard = (method) => {
+    setIsActionLoading(true);
+    fetch('/api/actions.php?action=order_card', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        firstName: newCardData.firstName,
+        lastName: newCardData.lastName,
+        class: newCardData.class,
+        useBalance: newCardData.useBalance,
+        paymentMethod: method
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if(data.status === 'success') {
+        // Bei Erfolg wird nun der neue Success-Screen im Modal gezeigt!
+        setOrderCardStep('success');
+        fetchUserData(false);
+      } else {
+        showToast(data.message || 'Fehler beim Bestellen.');
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Verbindungsfehler. Bitte versuche es erneut.');
+    })
+    .finally(() => setIsActionLoading(false));
+  };
+
+  const handleManualBuyAbo = (method) => {
+    setIsActionLoading(true);
+    fetch('/api/actions.php?action=buy_abo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        type: shopData.type,
+        days: shopData.days,
+        cardOption: shopData.cardOption,
+        selectedHolderId: shopData.selectedHolderId,
+        newStudent: shopData.newStudent,
+        useBalance: shopData.useBalance,
+        paymentMethod: method
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if(data.status === 'success') {
+        if (shopData.cardOption === 'new') {
+          // Neues Profil erstellt -> Ab in den Success-Screen (Schritt 5)
+          setAboStep(5);
+          fetchUserData(false);
+        } else {
+          showToast("Abo erfolgreich gebucht!");
+          setActiveTab('abos');
+          fetchUserData(false);
+        }
+      } else {
+        showToast(data.message || 'Fehler beim Abo-Kauf.');
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Verbindungsfehler. Bitte versuche es erneut.');
+    })
+    .finally(() => setIsActionLoading(false));
+  };
+
+  const openTopUpModal = () => {
+    setTopUpStep('choose');
+    setTopUpAmount(20);
+    setTopUpPayment('paypal');
+    setIsTopUpOpen(true);
+  };
+  
+  const openOrderCardModal = () => {
+    setOrderCardStep('form');
+    setOrderCardPayment('paypal');
+    setNewCardData({ firstName: '', lastName: '', class: '', useBalance: false });
+    setIsOrderCardOpen(true);
+  };
+
+  const openAboShop = () => {
+    setAboStep(1);
+    setAboPayment('paypal');
+    setShopData({
+      type: null,
+      days: [],
+      cardOption: 'existing',
+      selectedHolderId: cards.length > 0 ? cards[0].holderId : '',
+      newStudent: { firstName: '', lastName: '', class: '' },
+      useBalance: false
+    });
+    setActiveTab('abo-shop');
+  };
+
+  const calculateAboPrice = () => {
+    if (!shopData.type) return 0;
+    const basePrice = shopData.type === 'halb' ? 80 : 120;
+    const daysCost = shopData.days.length * basePrice;
+    const cardCost = shopData.cardOption === 'new' ? 5 : 0;
+    return daysCost + cardCost;
+  };
+
+
+  const renderAboCard = (abo) => (
+    <div key={abo.id} className={`bg-white rounded-3xl border ${abo.isActive ? 'border-green-200 ring-1 ring-green-100' : 'border-slate-200'} shadow-sm overflow-hidden relative`}>
+      <div className={`px-6 py-3 border-b flex justify-between items-center ${abo.isActive ? 'bg-green-50 border-green-100' : 'bg-slate-50 border-slate-100'}`}>
+        <span className="font-bold text-slate-800">{abo.type}</span>
+        <span className={`text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 ${abo.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+          {abo.isActive ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+          {abo.isActive ? 'Aktiv' : 'Abgelaufen'}
+        </span>
+      </div>
+      
+      <div className="p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
+            <User size={24} />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Schüler/in</p>
+            <p className="font-bold text-slate-800 text-lg">{abo.student}</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <p className="text-xs text-slate-500 mb-2">Gültige Wochentage</p>
+            <div className="flex gap-2">
+              {['Mo', 'Di', 'Mi', 'Do', 'Fr'].map(day => (
+                <span key={day} className={`w-8 h-8 flex items-center justify-center rounded-lg text-sm font-semibold ${abo.days.includes(day) ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'}`}>
+                  {day}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+            <span className="text-sm text-slate-500">Gültig bis:</span>
+            <span className={`font-semibold ${abo.isActive ? 'text-slate-800' : 'text-red-600'}`}>{abo.validUntil}</span>
+          </div>
+        </div>
+      </div>
+      
+      {!abo.isActive && (
+        <div className="p-4 bg-slate-50 border-t border-slate-100">
+           <button onClick={() => showToast("Abo wird verlängert...")} className="w-full py-2 bg-white border border-slate-200 text-slate-700 font-semibold rounded-lg hover:bg-slate-100 transition-colors">
+             Abo verlängern
+           </button>
+        </div>
+      )}
+    </div>
+  );
+
+  if (isLoading) {
+    return (
+      <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-blue-600 overflow-hidden">
+        <style>
+          {`
+            @keyframes liquid-morph {
+              0% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; transform: rotate(0deg); }
+              50% { border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%; transform: rotate(180deg); }
+              100% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; transform: rotate(360deg); }
+            }
+            @keyframes float {
+              0%, 100% { transform: translateY(0); }
+              50% { transform: translateY(-20px); }
+            }
+            .liquid-shape {
+              animation: liquid-morph 4s linear infinite;
+              background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.3));
+              backdrop-filter: blur(8px);
+              box-shadow: 0 15px 35px rgba(0,0,0,0.1), inset 0 0 20px rgba(255,255,255,0.8);
+            }
+            .liquid-container {
+              animation: float 3s ease-in-out infinite;
+            }
+          `}
+        </style>
+        
+        <div className="liquid-container relative w-48 h-48 flex items-center justify-center">
+          <div className="liquid-shape absolute inset-0"></div>
+          <div className="liquid-shape absolute inset-0 opacity-40 mix-blend-overlay" style={{ animationDirection: 'reverse', animationDuration: '6s' }}></div>
+          <div className="liquid-shape absolute inset-4 opacity-60 bg-blue-100" style={{ animationDuration: '3s' }}></div>
+          
+          <Utensils size={56} className="text-blue-600 relative z-10 animate-pulse drop-shadow-md" />
+        </div>
+        
+        <h2 className="text-white text-xl font-bold mt-12 animate-pulse tracking-[0.2em] relative z-10">DATEN WERDEN GELADEN</h2>
+      </div>
+    );
+  }
+
+  if (!isLoggedIn || !user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
+        <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100">
+          <div className="bg-blue-600 p-8 text-center">
+            <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
+              <Utensils className="text-white" size={32} />
+            </div>
+            <h1 className="text-2xl font-bold text-white">MensaPay</h1>
+            <p className="text-blue-100 mt-1">Das Ho'gauer Schulverpflegungs-Portal</p>
+          </div>
+          
+          <div className="p-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-6">
+              {authMode === 'login' ? 'Willkommen zurück!' : 'Eltern-Account erstellen'}
+            </h2>
+            
+            {authError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-sm font-medium flex items-center gap-2">
+                <AlertCircle size={16} /> {authError}
+              </div>
+            )}
+            
+            <form onSubmit={authMode === 'login' ? handleLogin : handleRegister} className="space-y-4">
+              {authMode === 'register' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Vorname (Elternteil)</label>
+                    <input required type="text" value={authData.firstName} onChange={e => setAuthData({...authData, firstName: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="Anna" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Nachname</label>
+                    <input required type="text" value={authData.lastName} onChange={e => setAuthData({...authData, lastName: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="Mustermann" />
+                  </div>
+                </div>
+              )}
+              
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">E-Mail Adresse</label>
+                <input required type="email" value={authData.email} onChange={e => setAuthData({...authData, email: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="mail@beispiel.de" />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Passwort</label>
+                <input required type="password" value={authData.password} onChange={e => setAuthData({...authData, password: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
+              </div>
+
+              {authMode === 'register' && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Passwort wiederholen</label>
+                  <input required type="password" value={authData.passwordConfirm} onChange={e => setAuthData({...authData, passwordConfirm: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
+                </div>
+              )}
+              
+              <button 
+                type="submit" 
+                disabled={isAuthLoading}
+                className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20 mt-6 flex justify-center items-center gap-2"
+              >
+                {isAuthLoading ? (
+                  <>
+                    <Loader2 className="animate-spin" size={20} />
+                    {authMode === 'login' ? 'Wird angemeldet...' : 'Wird registriert...'}
+                  </>
+                ) : (
+                  authMode === 'login' ? 'Einloggen' : 'Registrieren'
+                )}
+              </button>
+            </form>
+            
+            <div className="mt-6 text-center">
+              <button 
+                type="button"
+                disabled={isAuthLoading}
+                onClick={() => {
+                  setAuthMode(authMode === 'login' ? 'register' : 'login');
+                  setAuthError('');
+                }}
+                className="text-sm text-slate-500 hover:text-blue-600 disabled:opacity-50 font-medium transition-colors"
+              >
+                {authMode === 'login' ? 'Noch kein Account? Hier registrieren.' : 'Bereits registriert? Hier einloggen.'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Main App Wrapper (PayPal Context) ---
+  return (
+    <PayPalScriptProvider options={paypalOptions}>
+      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20 md:pb-0">
+        <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
+          <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-blue-600">
+              <Utensils size={24} className="stroke-[2.5]" />
+              <span className="text-xl font-bold tracking-tight">MensaPay</span>
+            </div>
+            
+            <nav className="hidden md:flex gap-1">
+              <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                <Wallet size={18} /> Übersicht
+              </button>
+              <button onClick={() => setActiveTab('abos')} className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${activeTab === 'abos' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                <CalendarDays size={18} /> Abos
+              </button>
+              <button onClick={() => setActiveTab('karten')} className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${activeTab === 'karten' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                <CreditCard size={18} /> Karten
+              </button>
+            </nav>
+
+            <div className="flex items-center gap-4">
+              <div className="hidden md:flex flex-col items-end">
+                <span className="text-sm font-semibold">{user.firstName} {user.lastName}</span>
+                <span className="text-xs text-slate-500">Eltern-Account</span>
+              </div>
+              <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors" title="Ausloggen">
+                <LogOut size={20} />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-5xl mx-auto p-4 py-8">
+          
+          {/* TAB: DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <h2 className="text-2xl font-bold text-slate-800">Kontoübersicht</h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="md:col-span-2 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-8 text-white shadow-xl shadow-blue-900/10 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-8 opacity-10">
+                    <Wallet size={120} />
+                  </div>
+                  <div className="relative z-10">
+                    <p className="text-blue-100 font-medium mb-1">Aktuelles Familienguthaben</p>
+                    <h3 className="text-5xl font-bold mb-6">{user.balance.toFixed(2).replace('.', ',')} €</h3>
+                    <button 
+                      onClick={openTopUpModal}
+                      className="bg-white text-blue-600 hover:bg-blue-50 px-6 py-3 rounded-xl font-semibold flex items-center gap-2 transition-colors shadow-sm"
+                    >
+                      <Plus size={20} /> Guthaben aufladen
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm flex flex-col justify-center">
+                  <h4 className="font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                    <ShieldCheck size={20} className="text-green-500"/> Kontostatus
+                  </h4>
+                  <ul className="space-y-3 text-sm text-slate-600">
+                    <li className="flex justify-between border-b border-slate-50 pb-2">
+                      <span>Verwaltete Schüler</span>
+                      <span className="font-bold text-slate-800">{cards.length}</span>
+                    </li>
+                    <li className="flex justify-between border-b border-slate-50 pb-2">
+                      <span>Aktive Abos</span>
+                      <span className="font-bold text-slate-800">{abos.filter(a => a.isActive).length}</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>Aktive Karten</span>
+                      <span className="font-bold text-slate-800">{cards.filter(c => c.status === 'Aktiv').length}</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden mt-8">
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                  <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                    <History size={20} className="text-slate-400" /> Vergangene Transaktionen
+                  </h3>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {transactions.length === 0 ? (
+                    <div className="p-6 text-center text-slate-500">Bisher keine Transaktionen vorhanden.</div>
+                  ) : (
+                    <>
+                      {transactions.slice(0, visibleTransactions).map(tx => (
+                        <div key={tx.id} className="p-4 sm:p-6 flex items-center justify-between hover:bg-slate-50 transition-colors animate-in fade-in duration-300">
+                          <div className="flex items-center gap-4">
+                            <div className={`p-3 rounded-full ${tx.type === 'deposit' ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-500'}`}>
+                              <tx.icon size={20} />
+                            </div>
+                            <div>
+                              <p className="font-semibold text-slate-800">{tx.description}</p>
+                              <p className="text-xs text-slate-500">{tx.date}</p>
+                            </div>
+                          </div>
+                          <div className={`font-bold text-lg ${tx.type === 'deposit' ? 'text-green-600' : 'text-slate-800'}`}>
+                            {tx.amount > 0 ? '+' : ''}{tx.amount.toFixed(2).replace('.', ',')} €
+                          </div>
+                        </div>
+                      ))}
+                      
+                      {visibleTransactions < transactions.length && (
+                        <div className="p-4 bg-slate-50 flex justify-center border-t border-slate-100">
+                          <button 
+                            onClick={() => setVisibleTransactions(prev => prev + 10)}
+                            className="px-6 py-2.5 bg-white border border-slate-200 hover:border-blue-300 text-blue-600 font-semibold rounded-xl text-sm transition-all shadow-sm flex items-center gap-2 hover:bg-blue-50"
+                          >
+                            Weitere laden ({transactions.length - visibleTransactions} ältere)
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: ABOS */}
+          {activeTab === 'abos' && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="flex justify-between items-end">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-800">Mensabos verwalten</h2>
+                  <p className="text-slate-500 mt-1">Günstigeres Essen an festen Tagen.</p>
+                </div>
+                <button onClick={openAboShop} className="hidden sm:flex bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-semibold items-center gap-2 transition-colors shadow-sm">
+                  <Plus size={20} /> Neues Abo kaufen
+                </button>
+              </div>
+
+              {abos.filter(a => a.isActive).length === 0 ? (
+                <div className="p-8 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                  <p className="text-slate-500">Keine aktiven Abos vorhanden.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {abos.filter(a => a.isActive).map(renderAboCard)}
+                </div>
+              )}
+
+              {abos.filter(a => !a.isActive).length > 0 && (
+                <div className="mt-8 pt-6 border-t border-slate-200">
+                  <button 
+                    onClick={() => setShowExpiredAbos(!showExpiredAbos)}
+                    className="text-slate-500 hover:text-slate-800 font-medium flex items-center justify-center gap-2 w-full transition-colors"
+                  >
+                    {showExpiredAbos ? <ChevronLeft size={20} className="-rotate-90" /> : <ChevronRight size={20} className="rotate-90" />}
+                    {showExpiredAbos ? 'Abgelaufene Abos ausblenden' : `Abgelaufene Abos anzeigen (${abos.filter(a => !a.isActive).length})`}
+                  </button>
+                  
+                  {showExpiredAbos && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6 opacity-80 animate-in fade-in slide-in-from-top-4 duration-300">
+                      {abos.filter(a => !a.isActive).map(renderAboCard)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button onClick={openAboShop} className="w-full sm:hidden bg-blue-600 text-white px-5 py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm">
+                <Plus size={20} /> Neues Abo kaufen
+              </button>
+            </div>
+          )}
+
+          {/* TAB: KARTEN */}
+          {activeTab === 'karten' && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="flex justify-between items-end">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-800">Chipkarten</h2>
+                  <p className="text-slate-500 mt-1">Karten für das Terminal in der Mensa.</p>
+                </div>
+                <button onClick={openOrderCardModal} className="hidden sm:flex bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-5 py-2.5 rounded-xl font-semibold items-center gap-2 transition-colors shadow-sm">
+                  <CreditCard size={20} /> Prepaid-Karte bestellen
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {cards.map((card, index) => (
+                  <div key={card.holderId || index} className={`bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden ${card.id === 'Wartend...' ? 'opacity-70' : ''}`}>
+                    <div className="h-24 bg-gradient-to-r from-slate-800 to-slate-700 relative flex items-center px-6">
+                      <CreditCard className="text-white/20 absolute right-4 w-16 h-16" />
+                      <span className="text-white font-mono tracking-widest text-lg z-10">{card.id}</span>
+                    </div>
+                    <div className="p-6 relative">
+                      <div className="absolute -top-10 right-6 w-16 h-16 bg-white rounded-full p-1 shadow-sm border border-slate-100">
+                        <img src={card.img} alt={card.student} className="w-full h-full rounded-full bg-slate-100" />
+                      </div>
+                      
+                      <h3 className="font-bold text-slate-800 text-lg mb-1 mt-2">{card.student}</h3>
+                      <div className="flex items-center gap-2 mb-4">
+                        <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md ${card.id === 'Wartend...' ? 'text-amber-600 bg-amber-50' : 'text-green-600 bg-green-50'}`}>
+                          {card.id !== 'Wartend...' && <CheckCircle2 size={12} />} {card.status}
+                        </span>
+                        {card.isPrepaidOnly ? (
+                          <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded-md">Nur Prepaid</span>
+                        ) : (
+                          <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-2 py-1 rounded-md">Abo verknüpft</span>
+                        )}
+                      </div>
+
+                      <div className="pt-4 border-t border-slate-100 flex gap-2">
+                        {card.id !== 'Wartend...' ? (
+                          <>
+                            <button onClick={() => showToast("Karte wurde temporär gesperrt.")} className="flex-1 py-2 text-sm font-medium text-slate-600 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors">
+                              Sperren
+                            </button>
+                            <button onClick={() => showToast("Pin wird zurückgesetzt...")} className="flex-1 py-2 text-sm font-medium text-slate-600 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors">
+                              PIN Reset
+                            </button>
+                          </>
+                        ) : (
+                          <p className="text-xs text-slate-500 w-full text-center py-1">Bitte an Lehrkraft wenden, um die physische Karte zu erhalten.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                
+                <div className="bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center p-8 text-center min-h-[250px]">
+                  <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-blue-500 shadow-sm mb-4">
+                    <Plus size={32} />
+                  </div>
+                  <h3 className="font-bold text-slate-700 mb-2">Weitere Karte benötigt?</h3>
+                  <p className="text-sm text-slate-500 mb-6">Bestelle eine reine Prepaid-Karte für einen weiteren Schüler.</p>
+                  <button onClick={openOrderCardModal} className="py-2.5 px-6 bg-white border border-slate-300 rounded-xl font-semibold text-slate-700 hover:bg-slate-100 transition-colors shadow-sm">
+                    Jetzt bestellen
+                  </button>
+                  <p className="text-xs text-slate-400 mt-4">Bei Abos ist die Karte inkl.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: ABO-SHOP WIZARD */}
+          {activeTab === 'abo-shop' && (
+            <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="flex items-center gap-4 mb-8">
+                <button onClick={() => setActiveTab('abos')} className="p-2 bg-white rounded-full shadow-sm border border-slate-200 hover:bg-slate-50 transition-colors">
+                  <ChevronLeft size={24} className="text-slate-600" />
+                </button>
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-800">Abo konfigurieren</h2>
+                  <p className="text-slate-500 mt-1">Schritt {aboStep} von 4</p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 sm:p-8">
+                
+                {/* Step 1: Abo Typ */}
+                {aboStep === 1 && (
+                  <div className="space-y-6 animate-in fade-in duration-300">
+                    <h3 className="text-xl font-bold text-slate-800 mb-4">1. Laufzeit wählen</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <button 
+                        onClick={() => setShopData({...shopData, type: 'halb'})}
+                        className={`p-6 rounded-2xl border-2 text-left transition-all ${shopData.type === 'halb' ? 'border-blue-500 bg-blue-50 ring-4 ring-blue-500/10' : 'border-slate-200 hover:border-blue-300'}`}
+                      >
+                        <h4 className="text-lg font-bold text-slate-800">Halbjahresabo</h4>
+                        <p className="text-sm text-slate-500 mt-2 mb-4">Gültig für 1 Schulhalbjahr. Ideal zum Ausprobieren.</p>
+                        <p className="font-semibold text-blue-600">80,00 € pro Wochentag</p>
+                      </button>
+                      
+                      <button 
+                        onClick={() => setShopData({...shopData, type: 'ganz'})}
+                        className={`p-6 rounded-2xl border-2 text-left transition-all ${shopData.type === 'ganz' ? 'border-blue-500 bg-blue-50 ring-4 ring-blue-500/10' : 'border-slate-200 hover:border-blue-300'}`}
+                      >
+                        <h4 className="text-lg font-bold text-slate-800">Ganzjahresabo</h4>
+                        <p className="text-sm text-slate-500 mt-2 mb-4">Gültig für das gesamte Schuljahr. Der beste Deal.</p>
+                        <p className="font-semibold text-blue-600">120,00 € pro Wochentag</p>
+                      </button>
+                    </div>
+                    
+                    <div className="mt-8 flex justify-end">
+                      <button 
+                        disabled={!shopData.type}
+                        onClick={() => setAboStep(2)} 
+                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 transition-colors"
+                      >
+                        Weiter <ChevronRight size={20} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 2: Wochentage */}
+                {aboStep === 2 && (
+                  <div className="space-y-6 animate-in fade-in duration-300">
+                    <h3 className="text-xl font-bold text-slate-800 mb-2">2. Wochentage auswählen</h3>
+                    <p className="text-slate-600 mb-6">An welchen Tagen soll das Essen inkludiert sein? Der Preis wird pro ausgewähltem Wochentag berechnet ({shopData.type === 'halb' ? '80,00 €' : '120,00 €'} je Tag).</p>
+                    
+                    <div className="flex flex-wrap gap-3">
+                      {['Mo', 'Di', 'Mi', 'Do', 'Fr'].map(day => {
+                        const isSelected = shopData.days.includes(day);
+                        return (
+                          <button 
+                            key={day}
+                            onClick={() => {
+                              if (isSelected) {
+                                setShopData({...shopData, days: shopData.days.filter(d => d !== day)});
+                              } else {
+                                setShopData({...shopData, days: [...shopData.days, day]});
+                              }
+                            }}
+                            className={`w-16 h-16 sm:w-20 sm:h-20 rounded-2xl font-bold text-lg transition-all ${isSelected ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 scale-105 border-2 border-blue-600' : 'bg-slate-100 text-slate-500 border-2 border-transparent hover:bg-slate-200'}`}
+                          >
+                            {day}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-8 flex justify-between items-center border-t border-slate-100 pt-6">
+                      <button onClick={() => setAboStep(1)} className="text-slate-500 font-semibold px-4 py-2 hover:bg-slate-100 rounded-lg transition-colors">Zurück</button>
+                      <button 
+                        disabled={shopData.days.length === 0}
+                        onClick={() => setAboStep(3)} 
+                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 transition-colors"
+                      >
+                        Weiter <ChevronRight size={20} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 3: Kartenzuweisung */}
+                {aboStep === 3 && (
+                  <div className="space-y-6 animate-in fade-in duration-300">
+                    <h3 className="text-xl font-bold text-slate-800 mb-4">3. Schüler Profil</h3>
+                    
+                    <div className="space-y-4">
+                      <label className={`block p-4 border-2 rounded-xl cursor-pointer transition-all ${shopData.cardOption === 'existing' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                        <div className="flex items-center gap-3">
+                          <input type="radio" checked={shopData.cardOption === 'existing'} onChange={() => setShopData({...shopData, cardOption: 'existing'})} className="w-5 h-5 text-blue-600" />
+                          <span className="font-bold text-slate-800">Bestehendes Profil nutzen</span>
+                        </div>
+                        
+                        {shopData.cardOption === 'existing' && (
+                          <div className="mt-4 pl-8">
+                            {cards.length > 0 ? (
+                              <select 
+                                value={shopData.selectedHolderId}
+                                onChange={(e) => setShopData({...shopData, selectedHolderId: e.target.value})}
+                                className="w-full p-3 rounded-xl border border-blue-200 bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                {cards.map(c => (
+                                  <option key={c.holderId} value={c.holderId}>{c.student} ({c.id === 'Wartend...' ? 'Ausstehende Karte' : 'Karte: ' + c.id})</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <p className="text-sm text-red-500">Keine Profile vorhanden. Bitte lege ein neues an.</p>
+                            )}
+                          </div>
+                        )}
+                      </label>
+
+                      <label className={`block p-4 border-2 rounded-xl cursor-pointer transition-all ${shopData.cardOption === 'new' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                        <div className="flex items-center gap-3">
+                          <input type="radio" checked={shopData.cardOption === 'new'} onChange={() => setShopData({...shopData, cardOption: 'new'})} className="w-5 h-5 text-blue-600" />
+                          <div>
+                            <span className="font-bold text-slate-800 block">Neues Schüler-Profil anlegen</span>
+                            <span className="text-xs text-slate-500">+ 5,00 € Kartenpfand</span>
+                          </div>
+                        </div>
+                        
+                        {shopData.cardOption === 'new' && (
+                          <div className="mt-4 pl-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                              <label className="text-xs font-semibold text-slate-600 mb-1 block">Vorname</label>
+                              <input type="text" value={shopData.newStudent.firstName} onChange={e => setShopData({...shopData, newStudent: {...shopData.newStudent, firstName: e.target.value}})} className="w-full p-2.5 rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500" placeholder="Max" />
+                            </div>
+                            <div>
+                              <label className="text-xs font-semibold text-slate-600 mb-1 block">Nachname</label>
+                              <input type="text" value={shopData.newStudent.lastName} onChange={e => setShopData({...shopData, newStudent: {...shopData.newStudent, lastName: e.target.value}})} className="w-full p-2.5 rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500" placeholder="Mustermann" />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className="text-xs font-semibold text-slate-600 mb-1 block">Klasse</label>
+                              <select value={shopData.newStudent.class} onChange={e => setShopData({...shopData, newStudent: {...shopData.newStudent, class: e.target.value}})} className="w-full p-2.5 rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                                <option value="">Bitte wählen...</option>
+                                {['5a','5b','5c','6a','6b','6c','7a','7b','8a','8b','9a','10a','11','12'].map(cls => (
+                                  <option key={cls} value={cls}>Klasse {cls}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                      </label>
+                    </div>
+
+                    <div className="mt-8 flex justify-between items-center border-t border-slate-100 pt-6">
+                      <button onClick={() => setAboStep(2)} className="text-slate-500 font-semibold px-4 py-2 hover:bg-slate-100 rounded-lg transition-colors">Zurück</button>
+                      <button 
+                        disabled={(shopData.cardOption === 'existing' && (!shopData.selectedHolderId || cards.length === 0)) || (shopData.cardOption === 'new' && (!shopData.newStudent.firstName || !shopData.newStudent.lastName || !shopData.newStudent.class))}
+                        onClick={() => setAboStep(4)} 
+                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 transition-colors"
+                      >
+                        Weiter zur Kasse <ChevronRight size={20} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 4: Checkout */}
+                {aboStep === 4 && (
+                  <div className="space-y-6 animate-in fade-in duration-300">
+                    <h3 className="text-xl font-bold text-slate-800 mb-4">4. Zusammenfassung & Zahlung</h3>
+                    
+                    <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
+                      <div className="flex justify-between items-center mb-4 pb-4 border-b border-slate-200">
+                        <div>
+                          <p className="font-bold text-slate-800">Wochentage ({shopData.days.length}x)</p>
+                          <p className="text-sm text-slate-500">{shopData.days.join(', ')} á {shopData.type === 'halb' ? '80,00' : '120,00'} €</p>
+                        </div>
+                        <span className="font-semibold">{(shopData.days.length * (shopData.type === 'halb' ? 80 : 120)).toFixed(2).replace('.', ',')} €</span>
+                      </div>
+
+                      {shopData.cardOption === 'new' && (
+                        <div className="flex justify-between items-center mb-4 pb-4 border-b border-slate-200">
+                          <div>
+                            <p className="font-bold text-slate-800">Neues Profil ({shopData.newStudent.firstName} {shopData.newStudent.lastName})</p>
+                            <p className="text-sm text-slate-500">inkl. Kartenpfand</p>
+                          </div>
+                          <span className="font-semibold">5,00 €</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between items-center text-lg mt-2">
+                        <p className="font-bold text-slate-800">Gesamtbetrag</p>
+                        <span className="font-bold text-slate-800">{calculateAboPrice().toFixed(2).replace('.', ',')} €</span>
+                      </div>
+
+                      {user.balance > 0 && (
+                        <div className="mt-4 pt-4 border-t border-slate-200">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={shopData.useBalance} 
+                              onChange={(e) => setShopData({...shopData, useBalance: e.target.checked})}
+                              className="w-5 h-5 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+                            />
+                            <div>
+                              <p className="font-semibold text-slate-800">Guthaben ({user.balance.toFixed(2).replace('.', ',')} €) verrechnen</p>
+                              <p className="text-sm text-slate-500">Wird vom Gesamtbetrag abgezogen</p>
+                            </div>
+                          </label>
+                        </div>
+                      )}
+                      
+                      {shopData.useBalance && user.balance > 0 && (
+                        <div className="flex justify-between items-center text-lg mt-4 pt-4 border-t border-slate-200">
+                          <p className="font-bold text-slate-800">Noch zu zahlen</p>
+                          <span className="font-bold text-blue-600">
+                            {Math.max(0, calculateAboPrice() - user.balance).toFixed(2).replace('.', ',')} €
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {Math.max(0, calculateAboPrice() - (shopData.useBalance ? user.balance : 0)) > 0 && (
+                      <div className="mb-6">
+                        <p className="font-semibold text-slate-800 text-sm mb-2">Zahlungsmethode wählen</p>
+                        <div className="space-y-2">
+                          {[
+                            { id: 'paypal', name: 'PayPal', icon: Smartphone },
+                            { id: 'klarna', name: 'Klarna', icon: ShoppingCart },
+                            { id: 'ueberweisung', name: 'Banküberweisung', icon: Landmark }
+                          ].map(method => (
+                            <label key={method.id} className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${aboPayment === method.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                              <input type="radio" name="aboPayment" checked={aboPayment === method.id} onChange={() => setAboPayment(method.id)} className="w-5 h-5 text-blue-600" />
+                              <method.icon size={20} className={aboPayment === method.id ? 'text-blue-600' : 'text-slate-500'} />
+                              <span className="font-bold text-slate-800">{method.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-3">
+                      <CheckoutAction 
+                        amount={Math.max(0, calculateAboPrice() - (shopData.useBalance ? user.balance : 0))}
+                        paymentMethod={aboPayment}
+                        actionType="buy_abo"
+                        actionData={{
+                          type: shopData.type,
+                          days: shopData.days,
+                          cardOption: shopData.cardOption,
+                          selectedHolderId: shopData.selectedHolderId,
+                          newStudent: shopData.newStudent,
+                          useBalance: shopData.useBalance
+                        }}
+                        onManualSubmit={(method) => handleManualBuyAbo(method)}
+                        onSucceed={() => {
+                          if (shopData.cardOption === 'new') {
+                            setAboStep(5);
+                            fetchUserData(false);
+                          } else {
+                            showToast("Abo erfolgreich gebucht!");
+                            setActiveTab('abos');
+                            fetchUserData(false);
+                          }
+                        }}
+                        onProcessing={() => setIsActionLoading(true)}
+                        onFinished={() => setIsActionLoading(false)}
+                        isLoading={isActionLoading}
+                        user={user}
+                      />
+                    </div>
+
+                    <div className="mt-8 pt-6 border-t border-slate-100">
+                      <button onClick={() => setAboStep(3)} className="text-slate-500 font-semibold px-4 py-2 hover:bg-slate-100 rounded-lg transition-colors">Zurück</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 5: SUCCESS SCREEN FÜR NEUE PROFILE IM ABO-SHOP */}
+                {aboStep === 5 && (
+                  <div className="text-center space-y-4 py-8 animate-in fade-in duration-300">
+                    <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                      <CheckCircle2 size={40} />
+                    </div>
+                    <h3 className="text-2xl font-bold text-slate-800">Abo & Profil angelegt!</h3>
+                    <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
+                      <p className="mb-3">Das neue Schülerprofil und das Abo wurden erfolgreich im System registriert.</p>
+                      <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für den nächsten Schritt:</p>
+                      <p className="mt-1">Die physische Chipkarte muss noch ausgegeben werden. Bitte wende dich (oder der Schüler) an eine <strong>Lehrkraft in der Schule</strong>, um eine freie Karte zu erhalten. Erst danach ist die Karte vollständig in der Verwaltung sichtbar und für das Essen nutzbar.</p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setActiveTab('abos');
+                      }}
+                      className="w-full mt-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-sm transition-colors"
+                    >
+                      Verstanden, zur Übersicht
+                    </button>
+                  </div>
+                )}
+
+              </div>
+            </div>
+          )}
+
+        </main>
+
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 pb-safe z-40">
+          <div className="flex justify-around items-center h-16">
+            <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${activeTab === 'dashboard' ? 'text-blue-600' : 'text-slate-500'}`}>
+              <Wallet size={20} className={activeTab === 'dashboard' ? 'fill-blue-50' : ''} />
+              <span className="text-[10px] font-medium">Übersicht</span>
+            </button>
+            <button onClick={() => setActiveTab('abos')} className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${activeTab === 'abos' ? 'text-blue-600' : 'text-slate-500'}`}>
+              <CalendarDays size={20} className={activeTab === 'abos' ? 'fill-blue-50' : ''} />
+              <span className="text-[10px] font-medium">Abos</span>
+            </button>
+            <button onClick={() => setActiveTab('karten')} className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${activeTab === 'karten' ? 'text-blue-600' : 'text-slate-500'}`}>
+              <CreditCard size={20} className={activeTab === 'karten' ? 'fill-blue-50' : ''} />
+              <span className="text-[10px] font-medium">Karten</span>
+            </button>
+          </div>
+        </nav>
+
+        {/* Top-Up Modal */}
+        <Modal isOpen={isTopUpOpen} onClose={() => setIsTopUpOpen(false)} title="Guthaben aufladen">
+          {topUpStep === 'choose' && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-600 mb-4">Wähle eine Methode, um das Prepaid-Guthaben für Käufe in der Mensa aufzuladen.</p>
+              
+              <button onClick={() => setTopUpStep('online')} className="w-full flex items-center justify-between p-4 border border-slate-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group">
+                <div className="flex items-center gap-3">
+                  <div className="bg-blue-100 p-2 rounded-lg text-blue-600 group-hover:bg-blue-200"><Smartphone size={24} /></div>
+                  <div className="text-left">
+                    <p className="font-bold text-slate-800">Online aufladen</p>
+                    <p className="text-xs text-slate-500">Klarna, PayPal, Kreditkarte</p>
+                  </div>
+                </div>
+                <ChevronRight className="text-slate-400 group-hover:text-blue-600" />
+              </button>
+
+              <button onClick={() => setTopUpStep('bar')} className="w-full flex items-center justify-between p-4 border border-slate-200 rounded-xl hover:border-green-500 hover:bg-green-50 transition-all group">
+                <div className="flex items-center gap-3">
+                  <div className="bg-green-100 p-2 rounded-lg text-green-600 group-hover:bg-green-200"><Banknote size={24} /></div>
+                  <div className="text-left">
+                    <p className="font-bold text-slate-800">Vor Ort Bar aufladen</p>
+                    <p className="text-xs text-slate-500">Am Terminal in der Mensa</p>
+                  </div>
+                </div>
+                <ChevronRight className="text-slate-400 group-hover:text-green-600" />
+              </button>
+            </div>
+          )}
+
+          {topUpStep === 'online' && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <button onClick={() => setTopUpStep('choose')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-2">
+                <ChevronLeft size={16}/> Zurück
+              </button>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Betrag in Euro</label>
+              <input 
+                type="number" 
+                min="5" 
+                step="5" 
+                value={topUpAmount} 
+                onChange={e => setTopUpAmount(e.target.value)} 
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xl font-bold outline-none focus:ring-2 focus:ring-blue-500" 
+              />
+              <div className="flex gap-2 mt-2">
+                {[10, 20, 50].map(amt => (
+                  <button key={amt} onClick={() => setTopUpAmount(amt)} className={`flex-1 py-2 rounded-lg font-semibold transition-colors ${Number(topUpAmount) === amt ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>+{amt}€</button>
+                ))}
+              </div>
+              <button 
+                disabled={!topUpAmount || topUpAmount <= 0}
+                onClick={() => setTopUpStep('checkout')} 
+                className="w-full mt-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold shadow-sm"
+              >
+                Weiter zur Zahlung
+              </button>
+            </div>
+          )}
+
+          {topUpStep === 'checkout' && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <button onClick={() => setTopUpStep('online')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-4">
+                <ChevronLeft size={16}/> Zurück
+              </button>
+              
+              <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
+                <div className="flex justify-between items-center text-lg">
+                  <p className="font-bold text-slate-800">Aufladebetrag</p>
+                  <span className="font-bold text-blue-600">{Number(topUpAmount).toFixed(2).replace('.', ',')} €</span>
+                </div>
+              </div>
+
+              <p className="font-semibold text-slate-800 text-sm mb-2">Zahlungsmethode wählen</p>
+              <div className="space-y-2 mb-6">
+                {[
+                  { id: 'paypal', name: 'PayPal', icon: Smartphone },
+                  { id: 'klarna', name: 'Klarna', icon: ShoppingCart },
+                  { id: 'ueberweisung', name: 'Banküberweisung', icon: Landmark }
+                ].map(method => (
+                  <label key={method.id} className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${topUpPayment === method.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                    <input type="radio" name="topUpPayment" checked={topUpPayment === method.id} onChange={() => setTopUpPayment(method.id)} className="w-5 h-5 text-blue-600" />
+                    <method.icon size={20} className={topUpPayment === method.id ? 'text-blue-600' : 'text-slate-500'} />
+                    <span className="font-bold text-slate-800">{method.name}</span>
+                  </label>
+                ))}
+              </div>
+
+              <CheckoutAction 
+                amount={Number(topUpAmount)}
+                paymentMethod={topUpPayment}
+                actionType="topup"
+                actionData={{ amount: Number(topUpAmount) }}
+                onManualSubmit={(method) => handleManualTopUp(method)}
+                onSucceed={() => {
+                  showToast("Aufladung erfolgreich!");
+                  setIsTopUpOpen(false);
+                  fetchUserData(false);
+                }}
+                onProcessing={() => setIsActionLoading(true)}
+                onFinished={() => setIsActionLoading(false)}
+                isLoading={isActionLoading}
+                user={user}
+              />
+            </div>
+          )}
+
+          {topUpStep === 'bar' && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <button onClick={() => setTopUpStep('choose')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-2">
+                <ChevronLeft size={16}/> Zurück
+              </button>
+              <div className="bg-green-50 text-green-800 p-5 rounded-xl border border-green-200">
+                <h4 className="font-bold mb-2 flex items-center gap-2"><Banknote size={20}/> Anleitung Barzahlung</h4>
+                <p className="text-sm mb-4">Du kannst dein Guthaben jederzeit vor Ort in der Schule aufladen. Gehe dazu einfach zur Finanzstelle neben dem Sekretariat.</p>
+                <p className="text-sm font-semibold mb-2">Nenne dort diese Daten:</p>
+                <ul className="list-disc list-inside text-sm space-y-2 mb-4">
+                  <li>Deine E-Mail: <strong>{user.email}</strong></li>
+                  <li>Oder bringe eine bestehende Mensakarte mit.</li>
+                </ul>
+                <p className="text-sm text-green-700">Das Guthaben ist nach der Einzahlung sofort in deinem Account verfügbar.</p>
+              </div>
+              <button onClick={() => setIsTopUpOpen(false)} className="w-full mt-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition-colors">
+                Verstanden
+              </button>
+            </div>
+          )}
+        </Modal>
+
+        {/* Prepaid Card Order Modal */}
+        <Modal isOpen={isOrderCardOpen} onClose={() => setIsOrderCardOpen(false)} title="Schülerprofil anlegen">
+          {orderCardStep === 'form' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <p className="text-sm text-slate-600 mb-4">Lege ein neues Schülerprofil für die Mensa an. Für die Einrichtung und die spätere Chipkarte fällt ein Pfand von <strong>5,00 €</strong> an.</p>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 mb-1 block">Vorname</label>
+                  <input type="text" value={newCardData.firstName} onChange={e => setNewCardData({...newCardData, firstName: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500" placeholder="Max" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 mb-1 block">Nachname</label>
+                  <input type="text" value={newCardData.lastName} onChange={e => setNewCardData({...newCardData, lastName: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500" placeholder="Mustermann" />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="text-xs font-semibold text-slate-600 mb-1 block">Klasse</label>
+                  <select value={newCardData.class} onChange={e => setNewCardData({...newCardData, class: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">Bitte wählen...</option>
+                    {['5a','5b','5c','6a','6b','6c','7a','7b','8a','8b','9a','10a','11','12'].map(cls => (
+                      <option key={cls} value={cls}>Klasse {cls}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {user.balance > 0 && (
+                <label className="flex items-center gap-3 cursor-pointer mt-4 p-3 border border-slate-200 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
+                  <input 
+                    type="checkbox" 
+                    checked={newCardData.useBalance} 
+                    onChange={(e) => setNewCardData({...newCardData, useBalance: e.target.checked})}
+                    className="w-5 h-5 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+                  />
+                  <div>
+                    <p className="font-semibold text-slate-800 text-sm">Guthaben ({user.balance.toFixed(2).replace('.', ',')} €) nutzen</p>
+                    <p className="text-xs text-slate-500">Wird anteilig mit dem Kartenpfand verrechnet</p>
+                  </div>
+                </label>
+              )}
+
+              <button 
+                disabled={!newCardData.firstName || !newCardData.lastName || !newCardData.class}
+                onClick={() => setOrderCardStep('checkout')}
+                className="w-full mt-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold flex justify-center items-center gap-2 shadow-sm transition-colors"
+              >
+                Weiter zur Zahlung
+              </button>
+            </div>
+          )}
+
+          {orderCardStep === 'checkout' && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <button onClick={() => setOrderCardStep('form')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-4">
+                <ChevronLeft size={16}/> Zurück
+              </button>
+
+              <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
+                <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-200">
+                  <div>
+                    <p className="font-bold text-slate-800">Neues Profil</p>
+                    <p className="text-sm text-slate-500">{newCardData.firstName} {newCardData.lastName} (Klasse {newCardData.class})</p>
+                  </div>
+                  <span className="font-semibold">5,00 €</span>
+                </div>
+                <div className="flex justify-between items-center text-lg mt-2">
+                  <p className="font-bold text-slate-800">Gesamtbetrag</p>
+                  <span className="font-bold text-slate-800">5,00 €</span>
+                </div>
+                
+                {newCardData.useBalance && user.balance > 0 && (
+                  <>
+                    <div className="flex justify-between items-center text-sm mt-2 text-slate-500">
+                      <p>Abzüglich Guthaben</p>
+                      <span>- {Math.min(5, user.balance).toFixed(2).replace('.', ',')} €</span>
+                    </div>
+                    <div className="flex justify-between items-center text-lg mt-4 pt-4 border-t border-slate-200">
+                      <p className="font-bold text-slate-800">Noch zu zahlen</p>
+                      <span className="font-bold text-blue-600">{Math.max(0, 5 - user.balance).toFixed(2).replace('.', ',')} €</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {Math.max(0, 5 - (newCardData.useBalance ? user.balance : 0)) > 0 && (
+                <>
+                  <p className="font-semibold text-slate-800 text-sm mb-2">Zahlungsmethode wählen</p>
+                  <div className="space-y-2 mb-6">
+                    {[
+                      { id: 'paypal', name: 'PayPal', icon: Smartphone },
+                      { id: 'klarna', name: 'Klarna', icon: ShoppingCart },
+                      { id: 'ueberweisung', name: 'Banküberweisung', icon: Landmark }
+                    ].map(method => (
+                      <label key={method.id} className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${orderCardPayment === method.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                        <input type="radio" name="orderCardPayment" checked={orderCardPayment === method.id} onChange={() => setOrderCardPayment(method.id)} className="w-5 h-5 text-blue-600" />
+                        <method.icon size={20} className={orderCardPayment === method.id ? 'text-blue-600' : 'text-slate-500'} />
+                        <span className="font-bold text-slate-800">{method.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <CheckoutAction 
+                amount={Math.max(0, 5 - (newCardData.useBalance ? user.balance : 0))}
+                paymentMethod={orderCardPayment}
+                actionType="order_card"
+                actionData={{
+                  firstName: newCardData.firstName,
+                  lastName: newCardData.lastName,
+                  class: newCardData.class,
+                  useBalance: newCardData.useBalance
+                }}
+                onManualSubmit={(method) => handleManualOrderCard(method)}
+                onSucceed={() => {
+                  setOrderCardStep('success');
+                  fetchUserData(false);
+                }}
+                onProcessing={() => setIsActionLoading(true)}
+                onFinished={() => setIsActionLoading(false)}
+                isLoading={isActionLoading}
+                user={user}
+              />
+            </div>
+          )}
+
+          {/* NEUER SUCCESS SCREEN (Zeigt an, wie es nun weitergeht) */}
+          {orderCardStep === 'success' && (
+            <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
+              <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                <CheckCircle2 size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800">Schülerprofil angelegt!</h3>
+              <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
+                <p className="mb-3">Das Schülerprofil wurde erfolgreich im System registriert und die Pfandgebühr beglichen.</p>
+                <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für den nächsten Schritt:</p>
+                <p className="mt-1">Die physische Chipkarte muss noch ausgegeben werden. Bitte wende dich (oder der Schüler) an eine <strong>Lehrkraft in der Schule</strong>, um eine freie Karte zu erhalten. Erst danach ist die Karte vollständig in der Verwaltung sichtbar und nutzbar.</p>
+              </div>
+              <button 
+                onClick={() => setIsOrderCardOpen(false)}
+                className="w-full mt-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-sm transition-colors"
+              >
+                Verstanden, Fenster schließen
+              </button>
+            </div>
+          )}
+        </Modal>
+
+        {/* Global Toast Notification */}
+        {isToastOpen && (
+          <div className="fixed bottom-24 md:bottom-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-xl flex items-center gap-2 z-50 animate-in slide-in-from-bottom-4 fade-in duration-300">
+            <CheckCircle2 size={18} className="text-green-400" />
+            <span className="text-sm font-medium">{toastMessage}</span>
+          </div>
+        )}
+      </div>
+    </PayPalScriptProvider>
+  );
+}
