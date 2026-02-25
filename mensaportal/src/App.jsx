@@ -113,14 +113,18 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
           return fetch("/api/actions.php?action=create_paypal_order", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ amount: amount, actionType: actionType, actionData: actionData }),
+            body: JSON.stringify({ 
+              amount: amount, 
+              actionType: actionType, 
+              actionData: actionData 
+            }),
           })
           .then(res => res.json())
           .then(orderData => {
             if (orderData.id) {
               return orderData.id;
             } else {
-              throw new Error(orderData.message || "Fehler beim Erstellen der Order");
+              throw new Error(orderData.message || orderData.error || "Fehler beim Erstellen der Order");
             }
           })
           .catch(error => {
@@ -138,7 +142,7 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
           })
           .then(res => res.json())
           .then(result => {
-            if (result.status === 'success') {
+            if (result.status === 'success' || result.status === 'COMPLETED') {
               // Bei Erfolg direkt die Ansicht aktualisieren
               onSucceed();
             } else {
@@ -148,7 +152,6 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
           .catch(error => {
             console.error("PayPal onApprove Fehler:", error);
             alert(error.message || "Sorry, die Zahlung konnte nicht verarbeitet werden.");
-            throw error;
           })
           .finally(() => {
             if (onFinished) onFinished(); // Lade-Spinner wieder aufheben
@@ -177,6 +180,9 @@ export default function App() {
   const [transactions, setTransactions] = useState([]);
   const [abos, setAbos] = useState([]);
   const [cards, setCards] = useState([]);
+  
+  // Dynamische Preise aus der Datenbank
+  const [sysPrices, setSysPrices] = useState({ cardDeposit: 5, halfYear: 80, fullYear: 120 });
 
   // Pagination-State für Transaktionen
   const [visibleTransactions, setVisibleTransactions] = useState(10);
@@ -244,6 +250,19 @@ export default function App() {
 
   useEffect(() => {
     fetchUserData(false);
+    
+    // Systempreise abrufen
+    fetch('/api/actions.php?action=get_prices')
+      .then(r => r.json())
+      .then(data => {
+        if(data.status === 'success') {
+          setSysPrices({
+            cardDeposit: data.data.card_deposit || 5,
+            halfYear: data.data.half_year_per_day || 80,
+            fullYear: data.data.full_year_per_day || 120
+          });
+        }
+      }).catch(err => console.error("Could not fetch prices", err));
   }, []);
   
   // Abo Shop State
@@ -268,6 +287,10 @@ export default function App() {
   const [orderCardStep, setOrderCardStep] = useState('form');
   const [orderCardPayment, setOrderCardPayment] = useState('paypal');
   const [newCardData, setNewCardData] = useState({ firstName: '', lastName: '', class: '', useBalance: false });
+
+  const [isLostCardOpen, setIsLostCardOpen] = useState(false);
+  const [lostCardStep, setLostCardStep] = useState('choose');
+  const [lostCardData, setLostCardData] = useState({ card: null, useBalance: false, paymentMethod: 'paypal' });
 
   const [isToastOpen, setIsToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
@@ -387,11 +410,62 @@ export default function App() {
     .then(r => r.json())
     .then(data => {
       if(data.status === 'success') {
-        // Bei Erfolg wird nun der neue Success-Screen im Modal gezeigt!
         setOrderCardStep('success');
         fetchUserData(false);
       } else {
         showToast(data.message || 'Fehler beim Bestellen.');
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Verbindungsfehler. Bitte versuche es erneut.');
+    })
+    .finally(() => setIsActionLoading(false));
+  };
+
+  const handleBlockCard = () => {
+    setIsActionLoading(true);
+    fetch('/api/actions.php?action=block_card', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ holderId: lostCardData.card.holderId, cardId: lostCardData.card.id })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if(data.status === 'success') {
+        setLostCardStep('success-block');
+        fetchUserData(false);
+      } else {
+        showToast(data.message || 'Fehler beim Sperren.');
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Verbindungsfehler. Bitte versuche es erneut.');
+    })
+    .finally(() => setIsActionLoading(false));
+  };
+
+  const handleManualReorderCard = (method) => {
+    setIsActionLoading(true);
+    fetch('/api/actions.php?action=reorder_card', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        holderId: lostCardData.card.holderId,
+        useBalance: lostCardData.useBalance,
+        paymentMethod: method
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if(data.status === 'success') {
+        setLostCardStep('success-reorder');
+        fetchUserData(false);
+      } else {
+        showToast(data.message || 'Fehler beim Beantragen der Ersatzkarte.');
       }
     })
     .catch(err => {
@@ -421,7 +495,6 @@ export default function App() {
     .then(data => {
       if(data.status === 'success') {
         if (shopData.cardOption === 'new') {
-          // Neues Profil erstellt -> Ab in den Success-Screen (Schritt 5)
           setAboStep(5);
           fetchUserData(false);
         } else {
@@ -454,6 +527,18 @@ export default function App() {
     setIsOrderCardOpen(true);
   };
 
+  const openLostCardModal = (card) => {
+    setLostCardData({ card: card, useBalance: false, paymentMethod: 'paypal' });
+    setLostCardStep('choose');
+    setIsLostCardOpen(true);
+  };
+
+  const openBlockCardModal = (card) => {
+    setLostCardData({ card: card, useBalance: false, paymentMethod: 'paypal' });
+    setLostCardStep('confirm-block');
+    setIsLostCardOpen(true);
+  };
+
   const openAboShop = () => {
     setAboStep(1);
     setAboPayment('paypal');
@@ -470,9 +555,9 @@ export default function App() {
 
   const calculateAboPrice = () => {
     if (!shopData.type) return 0;
-    const basePrice = shopData.type === 'halb' ? 80 : 120;
+    const basePrice = shopData.type === 'halb' ? sysPrices.halfYear : sysPrices.fullYear;
     const daysCost = shopData.days.length * basePrice;
-    const cardCost = shopData.cardOption === 'new' ? 5 : 0;
+    const cardCost = shopData.cardOption === 'new' ? sysPrices.cardDeposit : 0;
     return daysCost + cardCost;
   };
 
@@ -509,10 +594,20 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
-            <span className="text-sm text-slate-500">Gültig bis:</span>
-            <span className={`font-semibold ${abo.isActive ? 'text-slate-800' : 'text-red-600'}`}>{abo.validUntil}</span>
+          
+          <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-slate-500">Bisher genutzt:</span>
+              <span className="font-semibold text-slate-800 flex items-center gap-1">
+                <Utensils size={14} className="text-slate-400" /> {abo.usageCount}x
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-slate-500">Gültig bis:</span>
+              <span className={`font-semibold ${abo.isActive ? 'text-slate-800' : 'text-red-600'}`}>{abo.validUntil}</span>
+            </div>
           </div>
+
         </div>
       </div>
       
@@ -841,7 +936,7 @@ export default function App() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {cards.map((card, index) => (
-                  <div key={card.holderId || index} className={`bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden ${card.id === 'Wartend...' ? 'opacity-70' : ''}`}>
+                  <div key={card.holderId || index} className={`bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden ${card.id === 'Wartend...' ? 'opacity-70' : card.status === 'Gesperrt' ? 'opacity-60 grayscale' : ''}`}>
                     <div className="h-24 bg-gradient-to-r from-slate-800 to-slate-700 relative flex items-center px-6">
                       <CreditCard className="text-white/20 absolute right-4 w-16 h-16" />
                       <span className="text-white font-mono tracking-widest text-lg z-10">{card.id}</span>
@@ -853,8 +948,10 @@ export default function App() {
                       
                       <h3 className="font-bold text-slate-800 text-lg mb-1 mt-2">{card.student}</h3>
                       <div className="flex items-center gap-2 mb-4">
-                        <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md ${card.id === 'Wartend...' ? 'text-amber-600 bg-amber-50' : 'text-green-600 bg-green-50'}`}>
-                          {card.id !== 'Wartend...' && <CheckCircle2 size={12} />} {card.status}
+                        <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md ${card.id === 'Wartend...' ? 'text-amber-600 bg-amber-50' : card.status === 'Gesperrt' ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'}`}>
+                          {card.id !== 'Wartend...' && card.status !== 'Gesperrt' && <CheckCircle2 size={12} />} 
+                          {card.status === 'Gesperrt' && <XCircle size={12} />}
+                          {card.status}
                         </span>
                         {card.isPrepaidOnly ? (
                           <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded-md">Nur Prepaid</span>
@@ -866,11 +963,11 @@ export default function App() {
                       <div className="pt-4 border-t border-slate-100 flex gap-2">
                         {card.id !== 'Wartend...' ? (
                           <>
-                            <button onClick={() => showToast("Karte wurde temporär gesperrt.")} className="flex-1 py-2 text-sm font-medium text-slate-600 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors">
-                              Sperren
+                            <button disabled={card.status === 'Gesperrt'} onClick={() => openBlockCardModal(card)} className="flex-1 py-2 text-sm font-medium text-slate-600 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                              {card.status === 'Gesperrt' ? 'Gesperrt' : 'Sperren'}
                             </button>
-                            <button onClick={() => showToast("Pin wird zurückgesetzt...")} className="flex-1 py-2 text-sm font-medium text-slate-600 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors">
-                              PIN Reset
+                            <button onClick={() => openLostCardModal(card)} className="flex-1 py-2 text-sm font-medium text-slate-600 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors">
+                              Karte verloren
                             </button>
                           </>
                         ) : (
@@ -922,7 +1019,7 @@ export default function App() {
                       >
                         <h4 className="text-lg font-bold text-slate-800">Halbjahresabo</h4>
                         <p className="text-sm text-slate-500 mt-2 mb-4">Gültig für 1 Schulhalbjahr. Ideal zum Ausprobieren.</p>
-                        <p className="font-semibold text-blue-600">80,00 € pro Wochentag</p>
+                        <p className="font-semibold text-blue-600">{sysPrices.halfYear.toFixed(2).replace('.', ',')} € pro Wochentag</p>
                       </button>
                       
                       <button 
@@ -931,7 +1028,7 @@ export default function App() {
                       >
                         <h4 className="text-lg font-bold text-slate-800">Ganzjahresabo</h4>
                         <p className="text-sm text-slate-500 mt-2 mb-4">Gültig für das gesamte Schuljahr. Der beste Deal.</p>
-                        <p className="font-semibold text-blue-600">120,00 € pro Wochentag</p>
+                        <p className="font-semibold text-blue-600">{sysPrices.fullYear.toFixed(2).replace('.', ',')} € pro Wochentag</p>
                       </button>
                     </div>
                     
@@ -951,7 +1048,7 @@ export default function App() {
                 {aboStep === 2 && (
                   <div className="space-y-6 animate-in fade-in duration-300">
                     <h3 className="text-xl font-bold text-slate-800 mb-2">2. Wochentage auswählen</h3>
-                    <p className="text-slate-600 mb-6">An welchen Tagen soll das Essen inkludiert sein? Der Preis wird pro ausgewähltem Wochentag berechnet ({shopData.type === 'halb' ? '80,00 €' : '120,00 €'} je Tag).</p>
+                    <p className="text-slate-600 mb-6">An welchen Tagen soll das Essen inkludiert sein? Der Preis wird pro ausgewähltem Wochentag berechnet ({shopData.type === 'halb' ? sysPrices.halfYear.toFixed(2).replace('.', ',') : sysPrices.fullYear.toFixed(2).replace('.', ',')} € je Tag).</p>
                     
                     <div className="flex flex-wrap gap-3">
                       {['Mo', 'Di', 'Mi', 'Do', 'Fr'].map(day => {
@@ -1023,7 +1120,7 @@ export default function App() {
                           <input type="radio" checked={shopData.cardOption === 'new'} onChange={() => setShopData({...shopData, cardOption: 'new'})} className="w-5 h-5 text-blue-600" />
                           <div>
                             <span className="font-bold text-slate-800 block">Neues Schüler-Profil anlegen</span>
-                            <span className="text-xs text-slate-500">+ 5,00 € Kartenpfand</span>
+                            <span className="text-xs text-slate-500">+ {sysPrices.cardDeposit.toFixed(2).replace('.', ',')} € Kartenpfand</span>
                           </div>
                         </div>
                         
@@ -1073,9 +1170,9 @@ export default function App() {
                       <div className="flex justify-between items-center mb-4 pb-4 border-b border-slate-200">
                         <div>
                           <p className="font-bold text-slate-800">Wochentage ({shopData.days.length}x)</p>
-                          <p className="text-sm text-slate-500">{shopData.days.join(', ')} á {shopData.type === 'halb' ? '80,00' : '120,00'} €</p>
+                          <p className="text-sm text-slate-500">{shopData.days.join(', ')} á {shopData.type === 'halb' ? sysPrices.halfYear.toFixed(2).replace('.', ',') : sysPrices.fullYear.toFixed(2).replace('.', ',')} €</p>
                         </div>
-                        <span className="font-semibold">{(shopData.days.length * (shopData.type === 'halb' ? 80 : 120)).toFixed(2).replace('.', ',')} €</span>
+                        <span className="font-semibold">{(shopData.days.length * (shopData.type === 'halb' ? sysPrices.halfYear : sysPrices.fullYear)).toFixed(2).replace('.', ',')} €</span>
                       </div>
 
                       {shopData.cardOption === 'new' && (
@@ -1084,7 +1181,7 @@ export default function App() {
                             <p className="font-bold text-slate-800">Neues Profil ({shopData.newStudent.firstName} {shopData.newStudent.lastName})</p>
                             <p className="text-sm text-slate-500">inkl. Kartenpfand</p>
                           </div>
-                          <span className="font-semibold">5,00 €</span>
+                          <span className="font-semibold">{sysPrices.cardDeposit.toFixed(2).replace('.', ',')} €</span>
                         </div>
                       )}
 
@@ -1244,7 +1341,7 @@ export default function App() {
                   <div className="bg-green-100 p-2 rounded-lg text-green-600 group-hover:bg-green-200"><Banknote size={24} /></div>
                   <div className="text-left">
                     <p className="font-bold text-slate-800">Vor Ort Bar aufladen</p>
-                    <p className="text-xs text-slate-500">Am Terminal in der Mensa</p>
+                    <p className="text-xs text-slate-500">In der Finanzstelle der Schule</p>
                   </div>
                 </div>
                 <ChevronRight className="text-slate-400 group-hover:text-green-600" />
@@ -1354,7 +1451,7 @@ export default function App() {
         <Modal isOpen={isOrderCardOpen} onClose={() => setIsOrderCardOpen(false)} title="Schülerprofil anlegen">
           {orderCardStep === 'form' && (
             <div className="space-y-4 animate-in fade-in duration-300">
-              <p className="text-sm text-slate-600 mb-4">Lege ein neues Schülerprofil für die Mensa an. Für die Einrichtung und die spätere Chipkarte fällt ein Pfand von <strong>5,00 €</strong> an.</p>
+              <p className="text-sm text-slate-600 mb-4">Lege ein neues Schülerprofil für die Mensa an. Für die Einrichtung und die spätere Chipkarte fällt ein Pfand von <strong>{sysPrices.cardDeposit.toFixed(2).replace('.', ',')} €</strong> an.</p>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -1413,28 +1510,28 @@ export default function App() {
                     <p className="font-bold text-slate-800">Neues Profil</p>
                     <p className="text-sm text-slate-500">{newCardData.firstName} {newCardData.lastName} (Klasse {newCardData.class})</p>
                   </div>
-                  <span className="font-semibold">5,00 €</span>
+                  <span className="font-semibold">{sysPrices.cardDeposit.toFixed(2).replace('.', ',')} €</span>
                 </div>
                 <div className="flex justify-between items-center text-lg mt-2">
                   <p className="font-bold text-slate-800">Gesamtbetrag</p>
-                  <span className="font-bold text-slate-800">5,00 €</span>
+                  <span className="font-bold text-slate-800">{sysPrices.cardDeposit.toFixed(2).replace('.', ',')} €</span>
                 </div>
                 
                 {newCardData.useBalance && user.balance > 0 && (
                   <>
                     <div className="flex justify-between items-center text-sm mt-2 text-slate-500">
                       <p>Abzüglich Guthaben</p>
-                      <span>- {Math.min(5, user.balance).toFixed(2).replace('.', ',')} €</span>
+                      <span>- {Math.min(sysPrices.cardDeposit, user.balance).toFixed(2).replace('.', ',')} €</span>
                     </div>
                     <div className="flex justify-between items-center text-lg mt-4 pt-4 border-t border-slate-200">
                       <p className="font-bold text-slate-800">Noch zu zahlen</p>
-                      <span className="font-bold text-blue-600">{Math.max(0, 5 - user.balance).toFixed(2).replace('.', ',')} €</span>
+                      <span className="font-bold text-blue-600">{Math.max(0, sysPrices.cardDeposit - user.balance).toFixed(2).replace('.', ',')} €</span>
                     </div>
                   </>
                 )}
               </div>
 
-              {Math.max(0, 5 - (newCardData.useBalance ? user.balance : 0)) > 0 && (
+              {Math.max(0, sysPrices.cardDeposit - (newCardData.useBalance ? user.balance : 0)) > 0 && (
                 <>
                   <p className="font-semibold text-slate-800 text-sm mb-2">Zahlungsmethode wählen</p>
                   <div className="space-y-2 mb-6">
@@ -1454,7 +1551,7 @@ export default function App() {
               )}
 
               <CheckoutAction 
-                amount={Math.max(0, 5 - (newCardData.useBalance ? user.balance : 0))}
+                amount={Math.max(0, sysPrices.cardDeposit - (newCardData.useBalance ? user.balance : 0))}
                 paymentMethod={orderCardPayment}
                 actionType="order_card"
                 actionData={{
@@ -1490,6 +1587,167 @@ export default function App() {
               </div>
               <button 
                 onClick={() => setIsOrderCardOpen(false)}
+                className="w-full mt-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-sm transition-colors"
+              >
+                Verstanden, Fenster schließen
+              </button>
+            </div>
+          )}
+        </Modal>
+
+        {/* Lost Card Modal */}
+        <Modal isOpen={isLostCardOpen} onClose={() => setIsLostCardOpen(false)} title={`Karte verwalten: ${lostCardData.card?.student || ''}`}>
+          {lostCardStep === 'choose' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <p className="text-sm text-slate-600 mb-6">Wie möchtest du vorgehen? Wenn du die Karte nur verlegt hast, kannst du sie temporär sperren. Andernfalls kannst du direkt eine Ersatzkarte beantragen.</p>
+              
+              <button onClick={() => setLostCardStep('confirm-block')} className="w-full flex flex-col p-4 border border-slate-200 rounded-xl hover:border-amber-500 hover:bg-amber-50 transition-all text-left">
+                <span className="font-bold text-slate-800 flex items-center gap-2"><AlertCircle size={18} className="text-amber-500"/> Nur sperren</span>
+                <span className="text-sm text-slate-500 mt-1">Die Karte wird deaktiviert, kann aber später ggf. durch den Support reaktiviert werden. Kostenlos.</span>
+              </button>
+
+              <button onClick={() => setLostCardStep('reorder-checkout')} className="w-full flex flex-col p-4 border border-slate-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all text-left mt-3">
+                <span className="font-bold text-slate-800 flex items-center gap-2"><CreditCard size={18} className="text-blue-500"/> Sperren & Neu beantragen</span>
+                <span className="text-sm text-slate-500 mt-1">Alte Karte wird dauerhaft gelöscht und eine Ersatzkarte hinterlegt. Kostenpflichtig ({sysPrices.cardDeposit.toFixed(2).replace('.', ',')} € Pfand).</span>
+              </button>
+            </div>
+          )}
+
+          {lostCardStep === 'confirm-block' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <div className="bg-amber-50 text-amber-800 p-5 rounded-xl border border-amber-200">
+                <h4 className="font-bold mb-2 flex items-center gap-2"><AlertCircle size={20}/> Karte sperren</h4>
+                <p className="text-sm">Bist du sicher, dass du die Karte von <strong>{lostCardData.card?.student}</strong> sperren möchtest? Sie kann danach nicht mehr für Zahlungen am Terminal genutzt werden.</p>
+              </div>
+              
+              <div className="flex gap-3 mt-6">
+                <button 
+                  onClick={() => setIsLostCardOpen(false)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition-colors"
+                >
+                  Abbrechen
+                </button>
+                <button 
+                  onClick={handleBlockCard}
+                  disabled={isActionLoading}
+                  className="flex-1 py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold flex justify-center items-center gap-2 shadow-sm transition-colors disabled:opacity-50"
+                >
+                  {isActionLoading ? <Loader2 className="animate-spin" size={20} /> : 'Ja, jetzt sperren'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {lostCardStep === 'reorder-checkout' && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <button onClick={() => setLostCardStep('choose')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-4">
+                <ChevronLeft size={16}/> Zurück
+              </button>
+
+              <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
+                <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-200">
+                  <div>
+                    <p className="font-bold text-slate-800">Ersatzkarte</p>
+                    <p className="text-sm text-slate-500">Für {lostCardData.card?.student}</p>
+                  </div>
+                  <span className="font-semibold">{sysPrices.cardDeposit.toFixed(2).replace('.', ',')} €</span>
+                </div>
+                
+                {lostCardData.useBalance && user.balance > 0 && (
+                  <>
+                    <div className="flex justify-between items-center text-sm mt-2 text-slate-500">
+                      <p>Abzüglich Guthaben</p>
+                      <span>- {Math.min(sysPrices.cardDeposit, user.balance).toFixed(2).replace('.', ',')} €</span>
+                    </div>
+                  </>
+                )}
+
+                <div className="flex justify-between items-center text-lg mt-4 pt-4 border-t border-slate-200">
+                  <p className="font-bold text-slate-800">Gesamtbetrag</p>
+                  <span className="font-bold text-blue-600">{Math.max(0, sysPrices.cardDeposit - (lostCardData.useBalance ? user.balance : 0)).toFixed(2).replace('.', ',')} €</span>
+                </div>
+              </div>
+
+              {user.balance > 0 && (
+                <label className="flex items-center gap-3 cursor-pointer mb-6 p-3 border border-slate-200 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
+                  <input 
+                    type="checkbox" 
+                    checked={lostCardData.useBalance} 
+                    onChange={(e) => setLostCardData({...lostCardData, useBalance: e.target.checked})}
+                    className="w-5 h-5 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+                  />
+                  <div>
+                    <p className="font-semibold text-slate-800 text-sm">Guthaben ({user.balance.toFixed(2).replace('.', ',')} €) nutzen</p>
+                  </div>
+                </label>
+              )}
+
+              {Math.max(0, sysPrices.cardDeposit - (lostCardData.useBalance ? user.balance : 0)) > 0 && (
+                <>
+                  <p className="font-semibold text-slate-800 text-sm mb-2">Zahlungsmethode wählen</p>
+                  <div className="space-y-2 mb-6">
+                    {[
+                      { id: 'paypal', name: 'PayPal', icon: Smartphone },
+                      { id: 'klarna', name: 'Klarna', icon: ShoppingCart },
+                      { id: 'ueberweisung', name: 'Banküberweisung', icon: Landmark }
+                    ].map(method => (
+                      <label key={method.id} className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${lostCardData.paymentMethod === method.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                        <input type="radio" checked={lostCardData.paymentMethod === method.id} onChange={() => setLostCardData({...lostCardData, paymentMethod: method.id})} className="w-5 h-5 text-blue-600" />
+                        <method.icon size={20} className={lostCardData.paymentMethod === method.id ? 'text-blue-600' : 'text-slate-500'} />
+                        <span className="font-bold text-slate-800">{method.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <CheckoutAction 
+                amount={Math.max(0, sysPrices.cardDeposit - (lostCardData.useBalance ? user.balance : 0))}
+                paymentMethod={lostCardData.paymentMethod}
+                actionType="reorder_card"
+                actionData={{ holderId: lostCardData.card?.holderId, useBalance: lostCardData.useBalance }}
+                onManualSubmit={(method) => handleManualReorderCard(method)}
+                onSucceed={() => {
+                  setLostCardStep('success-reorder');
+                  fetchUserData(false);
+                }}
+                onProcessing={() => setIsActionLoading(true)}
+                onFinished={() => setIsActionLoading(false)}
+                isLoading={isActionLoading}
+                user={user}
+              />
+            </div>
+          )}
+
+          {lostCardStep === 'success-block' && (
+            <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
+              <div className="w-20 h-20 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                <AlertCircle size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800">Karte gesperrt</h3>
+              <p className="text-slate-600">Die Karte wurde deaktiviert und kann nicht mehr am Terminal verwendet werden.</p>
+              <button 
+                onClick={() => setIsLostCardOpen(false)}
+                className="w-full mt-6 py-4 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold shadow-sm transition-colors"
+              >
+                Schließen
+              </button>
+            </div>
+          )}
+
+          {lostCardStep === 'success-reorder' && (
+            <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
+              <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                <CheckCircle2 size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800">Ersatzkarte beantragt</h3>
+              <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
+                <p className="mb-3">Die alte Karte wurde gelöscht und der Antrag für eine neue Karte erfolgreich hinterlegt.</p>
+                <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für die Ausgabe:</p>
+                <p className="mt-1">Wie bei der Ersteinrichtung muss die physische Ersatzkarte erst von einer <strong>Lehrkraft</strong> an den Schüler herausgegeben werden. Danach ist sie wieder in deinem Account verknüpft.</p>
+              </div>
+              <button 
+                onClick={() => setIsLostCardOpen(false)}
                 className="w-full mt-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-sm transition-colors"
               >
                 Verstanden, Fenster schließen
