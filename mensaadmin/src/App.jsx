@@ -1,17 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReCAPTCHA from "react-google-recaptcha";
 import { 
   Search, Home, Users, CreditCard, FileText, Activity, 
   AlertCircle, CheckCircle, RefreshCw, X, Edit2, Trash2, 
   DollarSign, ChevronRight, Ban, ShieldAlert, Check, Clock,
-  Loader2, Lock, LogOut, Camera, RotateCcw, Settings, Save, Calendar, Plus
+  Loader2, Lock, LogOut, Camera, RotateCcw, Settings, Save, Calendar, Plus,
+  Filter, Download, Calculator, BarChart3
 } from 'lucide-react';
 
 const API_BASE = '/api'; 
 
 // --- HILFSFUNKTIONEN ---
 const getAboLabel = (type) => {
-  if (type === 'full_year') return 'Ganzjahresabo';
-  if (type === 'half_year') return 'Halbjahresabo';
+  if (!type) return '';
+  const t = type.toUpperCase();
+  if (t === 'FULL_YEAR' || t === 'FULL_YEAR') return 'Ganzjahresabo';
+  if (t === 'HALF_YEAR' || t === 'HALF_YEAR') return 'Halbjahresabo';
   return type;
 };
 
@@ -24,8 +28,11 @@ const formatDate = (dateString) => {
 
 const formatWeekdays = (daysStr) => {
   if (!daysStr || typeof daysStr !== 'string') return '';
-  const map = { '1': 'Mo', '2': 'Di', '3': 'Mi', '4': 'Do', '5': 'Fr' };
-  return daysStr.split(',').map(d => map[d.trim()] || d.trim()).join(', ');
+  const map = { 
+    '1': 'Mo', '2': 'Di', '3': 'Mi', '4': 'Do', '5': 'Fr',
+    'MONDAY': 'Mo', 'TUESDAY': 'Di', 'WEDNESDAY': 'Mi', 'THURSDAY': 'Do', 'FRIDAY': 'Fr'
+  };
+  return daysStr.split(',').map(d => map[d.trim().toUpperCase()] || d.trim()).join(', ');
 };
 
 // --- DEPOSIT MODAL (EINZAHLUNG) ---
@@ -82,6 +89,102 @@ const DepositModal = ({ parentId, onClose, onComplete }) => {
   );
 };
 
+const cleanId = (id) => {
+  if (typeof id === 'string' && id.startsWith('p')) {
+    return id.substring(1);
+  }
+  return id;
+};
+
+// --- USER SETTINGS MODAL (ROLLE & LÖSCHUNG) ---
+const UserSettingsModal = ({ user, onClose, onUpdateRole, onDeleteAccount }) => {
+  const [role, setRole] = useState(user.role || 'USER');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleRoleSave = () => {
+    setIsSubmitting(true);
+    onUpdateRole(user.id, role);
+  };
+
+  const handleDelete = () => {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setIsSubmitting(true);
+    onDeleteAccount(user.id);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex justify-center items-center p-4">
+      <div className="bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+          <div className="flex items-center gap-2">
+            <Settings className="h-5 w-5 text-gray-500" />
+            <h3 className="font-bold text-gray-900">Account-Einstellungen</h3>
+          </div>
+          <button onClick={onClose} disabled={isSubmitting} className="p-1 hover:bg-gray-200 rounded-full text-gray-400 transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        
+        <div className="p-5 space-y-6">
+          {/* Rollen-Verwaltung */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-900 mb-2">Nutzerrolle (Berechtigungen)</label>
+            <p className="text-xs text-gray-500 mb-3">Lege fest, welche Rechte dieser Account im System hat.</p>
+            <select 
+              value={role} 
+              onChange={(e) => setRole(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none mb-3 bg-white"
+            >
+              <option value="USER">Standard-Nutzer (Elternaccount)</option>
+              <option value="TEACHER">Lehrer (Lehreraccount)</option>
+              <option value="ADMIN">Administrator (Adminaccount)</option>
+            </select>
+            <button 
+              onClick={handleRoleSave} 
+              disabled={isSubmitting || role === user.role}
+              className="w-full py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium rounded-xl transition-colors disabled:opacity-50"
+            >
+              Rolle speichern
+            </button>
+          </div>
+
+          <hr className="border-gray-100" />
+
+          {/* DSGVO Löschung */}
+          <div className="bg-red-50 p-4 rounded-xl border border-red-100">
+            <h4 className="font-semibold text-red-800 flex items-center gap-2 mb-2">
+              <ShieldAlert className="h-4 w-4" /> DSGVO-konforme Löschung
+            </h4>
+            <p className="text-xs text-red-600 mb-4">
+              Diese Aktion löscht den Account sowie <b>alle</b> verknüpften Schüler, Chipkarten, Abonnements und den gesamten Transaktionsverlauf unwiderruflich aus der Datenbank.
+            </p>
+            
+            {confirmDelete ? (
+              <div className="space-y-3 animate-in fade-in">
+                <p className="text-sm font-bold text-red-700">Bist du dir absolut sicher?</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setConfirmDelete(false)} disabled={isSubmitting} className="flex-1 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">Abbrechen</button>
+                  <button onClick={handleDelete} disabled={isSubmitting} className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm font-bold hover:bg-red-700 flex items-center justify-center gap-2">
+                    {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin"/> : <Trash2 className="h-4 w-4"/>} Endgültig löschen
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={handleDelete} className="w-full py-2 border border-red-200 text-red-700 hover:bg-red-100 font-medium rounded-xl transition-colors text-sm flex items-center justify-center gap-2">
+                <Trash2 className="h-4 w-4" /> Account und Daten löschen
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- MARK ABO PAID MODAL ---
 const MarkAboPaidModal = ({ aboId, onClose, onComplete }) => {
   const [method, setMethod] = useState('Überweisung');
@@ -118,6 +221,46 @@ const MarkAboPaidModal = ({ aboId, onClose, onComplete }) => {
               type="date" required 
               className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
               value={date} onChange={e => setDate(e.target.value)} 
+            />
+          </div>
+          <div className="pt-2 flex gap-3">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50">Abbrechen</button>
+            <button type="submit" className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700">Speichern</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// --- MARK TRANSACTION PAID MODAL ---
+const MarkTransactionPaidModal = ({ transactionData, onClose, onComplete }) => {
+  const [transactionNr, setTransactionNr] = useState(() => {
+    const today = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    return `Überweisung ${today} ${transactionData.pin}`;
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onComplete(transactionData.unpaidId, transactionNr);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex justify-center items-center p-4">
+      <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+          <h3 className="font-bold text-gray-900">Zahlung bestätigen</h3>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded-full text-gray-400">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Zahlungsmethode / Belegnummer</label>
+            <input 
+              type="text" required autoFocus
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+              value={transactionNr} onChange={e => setTransactionNr(e.target.value)} 
             />
           </div>
           <div className="pt-2 flex gap-3">
@@ -406,12 +549,29 @@ export default function App() {
   
   const [assignModalData, setAssignModalData] = useState(null);
   const [payAboModalData, setPayAboModalData] = useState(null);
+  const [payTransactionModalData, setPayTransactionModalData] = useState(null);
   const [depositModalData, setDepositModalData] = useState(null); // NEU
+  const [userSettingsModalData, setUserSettingsModalData] = useState(null); // NEU
 
   const [dashboardData, setDashboardData] = useState(null);
   const [parentData, setParentData] = useState(null);
   const [pendingCards, setPendingCards] = useState([]);
-  const [unpaidAbos, setUnpaidAbos] = useState([]);
+  const [activeCards, setActiveCards] = useState([]);
+  const [unpaidTransactions, setUnpaidTransactions] = useState([]);
+  const [accountingData, setAccountingData] = useState(null);
+  const [classFilter, setClassFilter] = useState('');
+    const [accountingDates, setAccountingDates] = useState(() => {
+    const today = new Date();
+    let year = today.getFullYear();
+    // 7 = August (Monate fangen bei 0 an). Wenn vor 15. August, nimm das letzte Jahr
+    if (today.getMonth() < 7 || (today.getMonth() === 7 && today.getDate() < 15)) {
+      year--;
+    }
+    return {
+      start: `${year}-08-15`,
+      end: today.toISOString().split('T')[0]
+    };
+  });
 
   useEffect(() => {
     fetchDashboard();
@@ -478,14 +638,82 @@ export default function App() {
     }
   };
 
-  const loadUnpaidAbos = async () => {
+  const loadActiveCards = async () => {
+    setIsLoading(true);
+    try {
+      const data = await fetchJson(`${API_BASE}/data.php?action=active_cards`);
+      setActiveCards(data.activeCards || []);
+      setCurrentView({ type: 'activeCards', id: null });
+    } catch (err) {
+      alert("Fehler: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadUnpaidTransactions = async () => {
     setIsLoading(true);
     try {
       const data = await fetchJson(`${API_BASE}/data.php?action=unpaid`);
-      setUnpaidAbos(data.unpaidAbos || []);
-      setCurrentView({ type: 'unpaidAbos', id: null });
+      setUnpaidTransactions(data.unpaidTransactions || []);
+      setCurrentView({ type: 'unpaidTransactions', id: null });
     } catch (err) {
       alert("Fehler: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadAccounting = async (start = accountingDates.start, end = accountingDates.end) => {
+    setIsLoading(true);
+    try {
+      const data = await fetchJson(`${API_BASE}/data.php?action=accounting&start=${start}&end=${end}`);
+      setAccountingData(data);
+      setCurrentView({ type: 'accounting', id: null });
+    } catch (err) {
+      alert("Fehler beim Laden der Buchhaltung: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+    const exportAccountingData = async () => {
+    try {
+      setIsLoading(true);
+            const data = await fetchJson(`${API_BASE}/data.php?action=accounting_export&start=${accountingDates.start}&end=${accountingDates.end}&_t=${Date.now()}`);
+      
+      if (!data.transactions || data.transactions.length === 0) {
+        alert("Keine relevanten Transaktionen für den Export gefunden.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Spaltenköpfe
+      const headers = ['Transaktions-ID', 'Datum', 'Benutzer', 'Typ', 'Beschreibung', 'Betrag (EUR)'];
+      
+      // Reihen zusammenbauen
+      const rows = data.transactions.map(tx => [
+        tx.id || '',
+        formatDate(tx.date) + ' ' + (new Date(tx.date).toLocaleTimeString('de-DE')), // Datum + Uhrzeit
+        tx.userName || `User ${tx.userId}`,
+        tx.type || '',
+        `"${(tx.description || '').replace(/"/g, '""')}"`, // Beschreibung in Anführungszeichen (escaped)
+        tx.amount.toFixed(2).replace('.', ',') // Deutsches Zahlenformat
+      ].join(';'));
+
+      // CSV erstellen
+      const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + [headers.join(';'), ...rows].join('\n');
+      
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `Buchhaltung_Export_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+    } catch (err) {
+      alert("Fehler beim Exportieren: " + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -495,7 +723,9 @@ export default function App() {
     if (currentView.type === 'dashboard') fetchDashboard();
     else if (currentView.type === 'parentDetail') loadParentDetail(currentView.id);
     else if (currentView.type === 'pendingCards') loadPendingCards();
-    else if (currentView.type === 'unpaidAbos') loadUnpaidAbos();
+    else if (currentView.type === 'activeCards') loadActiveCards();
+    else if (currentView.type === 'unpaidTransactions') loadUnpaidTransactions();
+    else if (currentView.type === 'accounting') loadAccounting();
   };
 
   const runAction = async (actionName, data, onSuccess) => {
@@ -545,6 +775,13 @@ export default function App() {
     });
   };
 
+  const submitPayTransaction = (unpaidId, transactionNr) => {
+    runAction('markTransactionPaid', { unpaidId, transactionNr }, () => {
+      setPayTransactionModalData(null);
+      refreshCurrentView();
+    });
+  };
+
   const submitDeposit = (parentId, amount, description) => {
     runAction('deposit', { parentId, amount, description }, () => {
       setDepositModalData(null);
@@ -552,9 +789,57 @@ export default function App() {
     });
   };
 
+  const changeUserRole = (rawUserId, newRole) => {
+    const userId = cleanId(rawUserId);
+    runAction('updateUserRole', { userId, role: newRole }, () => {
+      setUserSettingsModalData(null);
+      refreshCurrentView();
+    });
+  };
+
+  const deleteUserAccount = (rawUserId) => {
+    const userId = cleanId(rawUserId);
+    runAction('deleteUserAccount', { userId }, () => {
+      setUserSettingsModalData(null);
+      fetchDashboard(); // Nach dem Löschen zurück zum Dashboard
+    });
+  };
+
   const deleteAbo = (aboId) => {
     if(window.confirm("Abonnement wirklich löschen?")) {
       runAction('deleteAbo', { aboId }, () => refreshCurrentView());
+    }
+  };
+
+  const collectCard = (cardId, studentId, listHasActiveAbo = null) => {
+    let hasActiveAbo = false;
+
+    // Entweder wird der Wert aus der Listenansicht übergeben, oder wir schauen im aktuellen parentData nach
+    if (listHasActiveAbo !== null) {
+      hasActiveAbo = listHasActiveAbo;
+    } else if (parentData) {
+    const studentAbos = parentData.subscriptions.filter(a => a.studentId === studentId);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Prüfen, ob der Schüler noch ein aktives Abo hat
+    hasActiveAbo = studentAbos.some(abo => {
+      if (!abo.endDate) return true;
+      return new Date(abo.endDate) >= today;
+    });
+    } else {
+      return; // Failsafe
+    }
+
+    let confirmMsg = "Karte einsammeln?\n\nDas System wird das Kartenpfand auf das Elternkonto zurückerstatten und die Karte löschen.";
+    if (hasActiveAbo) {
+      confirmMsg += "\n\n⚠️ WARNUNG: Der Schüler hat noch ein AKTIVES Abo!\nDie Karte wird gelöscht, aber der Schüler bleibt im System erhalten.";
+    } else {
+      confirmMsg += "\n\nHINWEIS: Der Schüler hat KEIN aktives Abo mehr.\nDer Schüler (Kartenhalter) wird zusammen mit der Karte gelöscht.";
+    }
+
+    if (window.confirm(confirmMsg)) {
+      runAction('collectCard', { cardId, studentId, deleteStudent: !hasActiveAbo }, () => refreshCurrentView());
     }
   };
 
@@ -565,6 +850,90 @@ export default function App() {
     }
   };
 
+    // --- KARTEN EXPORT & FILTER LOGIK ---
+  const availableClasses = [...new Set(pendingCards.map(c => c.grade).filter(Boolean))].sort();
+  
+  const filteredPendingCards = pendingCards.filter(card => {
+    if (!classFilter) return true;
+    return card.grade === classFilter;
+  });
+
+  const exportPendingCards = () => {
+    // Spaltenköpfe
+    const headers = ['Klasse', 'Schüler', 'Bestelldatum'];
+    
+    // Reihen zusammenbauen (Semikolon für deutsches Excel)
+    const rows = filteredPendingCards.map(card => [
+      card.grade || '',
+      card.studentName || '',
+      formatDate(card.orderDate) || ''
+    ].join(';'));
+
+    // UTF-8 BOM hinzufügen (\uFEFF), damit Excel Umlaute richtig erkennt
+    const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + [headers.join(';'), ...rows].join('\n');
+    
+    // Download anstoßen
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Ausstehende_Karten${classFilter ? '_Klasse_'+classFilter : ''}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+    // --- NEU: BROWSER HISTORY LOGIK FÜR DEN ZURÜCK-BUTTON ---
+
+  // 1. Speichert den aktuellen Zustand im Browser-Verlauf (URL Hash)
+  useEffect(() => {
+    if (!isAuthenticated || !currentView) return;
+    
+    // Generiert z.B. #tab=dashboard&view=parentDetail&id=p123
+    const newHash = `#view=${currentView.type}${currentView.id ? `&id=${currentView.id}` : ''}`;
+    
+    if (window.location.hash !== newHash) {
+      if (!window.location.hash) {
+        // Initiale Seite ersetzen, damit man nicht in einer Endlosschleife feststeckt
+        window.history.replaceState(null, '', newHash);
+      } else {
+        // Neue Seite in den Verlauf pushen
+        window.history.pushState(null, '', newHash);
+      }
+    }
+  }, [currentView, isAuthenticated]);
+
+  // 2. Hört auf den "Zurück"-Button (popstate) und lädt die Daten neu
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const handlePopState = () => {
+      if (!window.location.hash) return;
+      
+      const params = new URLSearchParams(window.location.hash.replace('#', '?'));
+      const viewType = params.get('view');
+      const viewId = params.get('id');
+
+      // Daten anhand der wiederhergestellten Ansicht neu laden
+      if (viewType === 'dashboard') fetchDashboard();
+      else if (viewType === 'parentDetail' && viewId) loadParentDetail(viewId);
+      else if (viewType === 'pendingCards') loadPendingCards();
+      else if (viewType === 'activeCards') loadActiveCards();
+      else if (viewType === 'unpaidTransactions') loadUnpaidTransactions();
+      else if (viewType === 'accounting') loadAccounting();
+      else if (viewType) setCurrentView({ type: viewType, id: viewId || null });
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    
+    // Fängt auch Deep-Links beim ersten Laden ab (z.B. wenn man direkt einen Link zu einer Seite aufruft)
+    if (window.location.hash) {
+      handlePopState();
+    }
+
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isAuthenticated]); 
+  // --- ENDE BROWSER HISTORY LOGIK ---
+
   // --- COMPONENTS ---
   const LoginScreen = () => {
     const [email, setEmail] = useState('');
@@ -572,16 +941,38 @@ export default function App() {
     const [stayLoggedIn, setStayLoggedIn] = useState(false);
     const [loginErr, setLoginErr] = useState('');
     const [isLoggingIn, setIsLoggingIn] = useState(false);
+    const [captchaToken, setCaptchaToken] = useState(null);
+    const captchaParentRef = useRef(null);
+    const [captchaScale, setCaptchaScale] = useState(1);
+
+    useEffect(() => {
+      const handleResize = () => {
+        if (captchaParentRef.current) {
+          const parentWidth = captchaParentRef.current.offsetWidth;
+          // Standardbreite von reCAPTCHA ist 304px
+          const newScale = parentWidth / 304;
+          setCaptchaScale(newScale);
+        }
+      };
+
+      handleResize();
+      window.addEventListener('resize', handleResize);
+      return () => window.removeEventListener('resize', handleResize);
+    }, []);
 
     const handleLogin = async (e) => {
       e.preventDefault();
+      if (!captchaToken) {
+        setLoginErr(`Bitte löse das Captcha`);
+        return;
+      }
       setIsLoggingIn(true);
       setLoginErr('');
       try {
         const res = await fetch(`${API_BASE}/login.php`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, passwort: password, angemeldet_bleiben: stayLoggedIn }),
+          body: JSON.stringify({ email, passwort: password, angemeldet_bleiben: stayLoggedIn, captcha: captchaToken }),
           credentials: 'include'
         });
         const textData = await res.text();
@@ -622,6 +1013,17 @@ export default function App() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Passwort</label>
               <input type="password" required className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500" value={password} onChange={e => setPassword(e.target.value)} />
+            </div>
+            <div ref={captchaParentRef} className="w-full overflow-hidden rounded-xl border border-gray-200 bg-gray-50 flex justify-center items-center h-[78px]">
+              <div style={{ 
+                transform: `scale(${captchaScale})`, 
+                transformOrigin: 'center center'
+              }}>
+                <ReCAPTCHA
+                  sitekey="***REMOVED***"
+                  onChange={(token) => setCaptchaToken(token)}
+                />
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="stayLoggedIn" checked={stayLoggedIn} onChange={e => setStayLoggedIn(e.target.checked)} className="w-4 h-4 text-blue-600 rounded" />
@@ -760,11 +1162,29 @@ export default function App() {
     };
 
     const cards = [
-      { label: 'Gesamtguthaben im System', value: `${stats.totalBalance.toFixed(2)} €`, icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-100' },
-      { label: 'Aktive Chipkarten', value: stats.activeCards, icon: CreditCard, color: 'text-blue-600', bg: 'bg-blue-100' },
       { 
-        label: 'Unbezahlte Abos', value: stats.unpaidAbos, icon: AlertCircle, color: 'text-amber-600', bg: 'bg-amber-100',
-        onClick: () => loadUnpaidAbos()
+        label: 'Gesamtguthaben im System', 
+        value: `${stats.totalBalance.toFixed(2)} €`, 
+        icon: DollarSign, 
+        color: 'text-emerald-600', 
+        bg: 'bg-emerald-100',
+        onClick: () => loadAccounting()
+      },
+      { 
+        label: 'Aktive Chipkarten', 
+        value: stats.activeCards, 
+        icon: CreditCard, 
+        color: 'text-blue-600', 
+        bg: 'bg-blue-100',
+        onClick: () => loadActiveCards()
+      },
+      { 
+        label: 'Unbezahlte Transaktionen', 
+        value: stats.unpaidTransactions, 
+        icon: AlertCircle, 
+        color: 'text-amber-600', 
+        bg: 'bg-amber-100',
+        onClick: () => loadUnpaidTransactions()
       },
       { 
         label: 'Ausstehende Karten', value: stats.pendingCards, icon: Clock, color: 'text-purple-600', bg: 'bg-purple-100',
@@ -789,7 +1209,12 @@ export default function App() {
         
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Letzte Systemaktivitäten</h3>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Letzte Systemaktivitäten</h3>
+              <button onClick={() => loadAccounting()} className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700 font-medium bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors">
+                <Calculator className="h-4 w-4" /> Buchhaltung
+              </button>
+            </div>
             <div className="space-y-4">
               {recentTransactions.map((tx, idx) => (
                 <div key={idx} className="flex items-center justify-between p-4 rounded-xl bg-gray-50 border border-gray-100">
@@ -871,10 +1296,26 @@ export default function App() {
             <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
               <button onClick={() => fetchDashboard()} className="hover:text-blue-600 flex items-center gap-1"><Home className="h-4 w-4"/> Dashboard</button>
               <ChevronRight className="h-3 w-3" />
-              <span>Familienseite / Elternaccount</span>
+              <span>{parent.role === 'ADMIN' ? 'Adminaccount' : parent.role === 'TEACHER' ? 'Lehreraccount' : 'Elternaccount'}</span>
             </div>
-            <h1 className="text-3xl font-bold text-gray-900">{parent.name}</h1>
-            <p className="text-gray-500">{parent.email}</p>
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-bold text-gray-900">{parent.name}</h1>
+              <button 
+                onClick={() => setUserSettingsModalData(parent)} 
+                className="p-2 text-gray-400 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors" 
+                title="Account-Einstellungen & Rolle"
+              >
+                <Settings className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <p className="text-gray-500">{parent.email}</p>
+              {parent.role && parent.role !== 'USER' && (
+                <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-xs font-bold rounded-md tracking-wide">
+                  {parent.role}
+                </span>
+              )}
+            </div>
           </div>
           
           <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex items-center gap-6">
@@ -945,6 +1386,11 @@ export default function App() {
                                 ) : (
                                   <button onClick={() => updateCardStatus(card.id, 'Aktiv')} className="text-xs px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-medium flex items-center gap-1 transition-colors">
                                     <CheckCircle className="h-3 w-3"/> Entsperren
+                                  </button>
+                                )}
+                                {card.status !== 'Bestellt' && (
+                                  <button onClick={() => collectCard(card.id, student.id)} className="text-xs px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg font-medium flex items-center gap-1 transition-colors" title="Karte einsammeln & Pfand erstatten">
+                                    <RotateCcw className="h-3 w-3"/> Einsammeln
                                   </button>
                                 )}
                               </div>
@@ -1057,6 +1503,33 @@ export default function App() {
         </div>
         <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3"><Clock className="h-6 w-6 text-purple-600" /> Ausstehende Kartenbestellungen</h2>
 
+          <div className="flex items-center gap-3">
+                    {/* Filter Dropdown */}
+                    <div className="relative flex items-center">
+                      <Filter className="h-4 w-4 absolute left-3 text-gray-400" />
+                      <select 
+                        value={classFilter}
+                        onChange={(e) => setClassFilter(e.target.value)}
+                        className="pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none bg-white"
+                      >
+                        <option value="">Alle Klassen</option>
+                        {availableClasses.map(cls => (
+                          <option key={cls} value={cls}>Klasse {cls}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Export Button */}
+                    <button 
+                      onClick={exportPendingCards}
+                      disabled={filteredPendingCards.length === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                      <Download className="h-4 w-4" /> Excel / CSV Export
+                    </button>
+            </div>
+
+
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm text-gray-500">
@@ -1085,38 +1558,333 @@ export default function App() {
     );
   };
 
-  const UnpaidAbosList = () => {
+  const ActiveCardsList = () => {
+    const activeAvailableClasses = [...new Set(activeCards.map(c => c.grade).filter(Boolean))].sort();
+    
+    const filteredActiveCards = activeCards.filter(card => {
+      if (!classFilter) return true;
+      return card.grade === classFilter;
+    });
+
+    const exportActiveCards = () => {
+      const headers = ['Kartennummer', 'Klasse', 'Schüler', 'Elternaccount'];
+      const rows = filteredActiveCards.map(card => [
+        card.cardNumber || '',
+        card.grade || '',
+        card.studentName || '',
+        card.parentName || ''
+      ].join(';'));
+      const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + [headers.join(';'), ...rows].join('\n');
+      
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `Aktive_Karten${classFilter ? '_Klasse_'+classFilter : ''}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    };
+
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
         <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
           <button onClick={() => fetchDashboard()} className="hover:text-blue-600 flex items-center gap-1"><Home className="h-4 w-4"/> Dashboard</button>
-          <ChevronRight className="h-3 w-3" /><span>Unbezahlte Abos</span>
+          <ChevronRight className="h-3 w-3" /><span>Aktive Chipkarten</span>
         </div>
-        <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3"><AlertCircle className="h-6 w-6 text-amber-600" /> Unbezahlte Abonnements</h2>
+        <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3"><CreditCard className="h-6 w-6 text-blue-600" /> Aktive Chipkarten im System</h2>
+
+        <div className="flex items-center gap-3">
+          <div className="relative flex items-center">
+            <Filter className="h-4 w-4 absolute left-3 text-gray-400" />
+            <select 
+              value={classFilter}
+              onChange={(e) => setClassFilter(e.target.value)}
+              className="pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none bg-white"
+            >
+              <option value="">Alle Klassen</option>
+              {activeAvailableClasses.map(cls => (
+                <option key={cls} value={cls}>Klasse {cls}</option>
+              ))}
+            </select>
+          </div>
+          <button 
+            onClick={exportActiveCards}
+            disabled={filteredActiveCards.length === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" /> Excel / CSV Export
+          </button>
+        </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm text-gray-500">
               <thead className="bg-gray-50 text-xs text-gray-700 uppercase">
-                <tr><th className="px-6 py-4">Abo-Typ</th><th className="px-6 py-4">Schüler</th><th className="px-6 py-4">Klasse</th><th className="px-6 py-4">Familienseite</th><th className="px-6 py-4 text-right">Aktion</th></tr>
+                <tr>
+                  <th className="px-6 py-4">Kartennummer</th>
+                  <th className="px-6 py-4">Schüler</th>
+                  <th className="px-6 py-4">Klasse</th>
+                  <th className="px-6 py-4">Elternaccount</th>
+                  <th className="px-6 py-4 text-right">Aktion</th>
+                </tr>
               </thead>
               <tbody>
-                {unpaidAbos.length === 0 ? (
-                  <tr><td colSpan="5" className="px-6 py-8 text-center text-gray-500">Alle Abos sind bezahlt.</td></tr>
+                {activeCards.length === 0 ? (
+                  <tr><td colSpan="5" className="px-6 py-8 text-center text-gray-500">Keine aktiven Karten.</td></tr>
                 ) : (
-                  unpaidAbos.map(abo => (
-                    <tr key={abo.id} className="border-b border-gray-100 hover:bg-gray-50/50">
-                      <td className="px-6 py-4 font-medium text-gray-900">{getAboLabel(abo.planName)}</td>
-                      <td className="px-6 py-4 font-medium text-gray-900">{abo.studentName}</td>
-                      <td className="px-6 py-4">{abo.grade || '-'}</td>
-                      <td className="px-6 py-4"><button onClick={() => loadParentDetail(abo.parentId)} className="text-blue-600 hover:underline font-medium">{abo.parentName}</button></td>
-                      <td className="px-6 py-4 text-right"><button onClick={() => setPayAboModalData(abo.id)} className="text-xs px-4 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg font-medium">Als bezahlt markieren</button></td>
+                  filteredActiveCards.map(card => (
+                    <tr key={card.id} className="border-b border-gray-100 hover:bg-gray-50/50">
+                      <td className="px-6 py-4 font-mono font-medium text-gray-900">{card.cardNumber}</td>
+                      <td className="px-6 py-4 font-medium text-gray-900">{card.studentName}</td>
+                      <td className="px-6 py-4">{card.grade || '-'}</td>
+                      <td className="px-6 py-4"><button onClick={() => loadParentDetail(card.parentId)} className="text-blue-600 hover:underline font-medium">{card.parentName}</button></td>
+                      <td className="px-6 py-4 text-right">
+                        <button 
+                          onClick={() => collectCard(card.cardId, card.studentId, card.hasActiveAbo)} 
+                          className="text-xs px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg font-medium inline-flex items-center gap-1 transition-colors"
+                          title="Karte einsammeln & Pfand erstatten"
+                        >
+                          <RotateCcw className="h-3 w-3"/> Einsammeln
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  const UnpaidTransactionsList = () => {
+    const [searchTerm, setSearchTerm] = useState('');
+
+    const markTransactionPaid = (unpaidId, pin) => {
+      // Datum von heute generieren
+      const today = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const defaultText = `Überweisung ${today} ${pin}`;
+      
+      const transactionNr = window.prompt("Zahlungsmethode / Belegnummer eingeben:", defaultText);
+      if (transactionNr) {
+        runAction('markTransactionPaid', { unpaidId, transactionNr }, () => refreshCurrentView());
+      }
+    };
+
+    const filteredTransactions = unpaidTransactions.filter(tx => {
+      if (!searchTerm) return true;
+      const term = searchTerm.toLowerCase();
+      const pinMatch = tx.pin?.toString().toLowerCase().includes(term);
+      
+      const amountStr = Math.abs(tx.amount).toFixed(2);
+      const amountMatch = amountStr.includes(term) || amountStr.replace('.', ',').includes(term);
+      
+      return pinMatch || amountMatch;
+    });
+
+    return (
+      <div className="p-6 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
+        <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
+          <button onClick={() => fetchDashboard()} className="hover:text-blue-600 flex items-center gap-1"><Home className="h-4 w-4"/> Dashboard</button>
+          <ChevronRight className="h-3 w-3" /><span>Unbezahlte Transaktionen</span>
+        </div>
+        
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
+            <AlertCircle className="h-6 w-6 text-amber-600" /> Ausstehende Zahlungen
+          </h2>
+          
+          <div className="relative flex items-center w-full max-w-sm">
+            <Search className="h-4 w-4 absolute left-3 text-gray-400" />
+            <input 
+              type="text"
+              placeholder="Nach PIN oder Betrag suchen..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all shadow-sm"
+            />
+            {searchTerm && (
+              <button onClick={() => setSearchTerm('')} className="absolute right-3 p-1 hover:bg-gray-100 rounded-full text-gray-400 transition-colors">
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm text-gray-500">
+              <thead className="bg-gray-50 text-xs text-gray-700 uppercase">
+                <tr>
+                  <th className="px-6 py-4">Datum</th>
+                  <th className="px-6 py-4">PIN</th>
+                  <th className="px-6 py-4">Benutzer</th>
+                  <th className="px-6 py-4">Beschreibung</th>
+                  <th className="px-6 py-4">Betrag</th>
+                  <th className="px-6 py-4 text-right">Aktion</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTransactions.length === 0 ? (
+                  <tr><td colSpan="6" className="px-6 py-8 text-center text-gray-500">
+                    {searchTerm ? `Keine Ergebnisse für "${searchTerm}" gefunden.` : 'Keine unbezahlten Transaktionen vorhanden.'}
+                  </td></tr>
+                ) : (
+                  filteredTransactions.map(tx => (
+                    <tr key={tx.unpaidId} className="border-b border-gray-100 hover:bg-gray-50/50">
+                      <td className="px-6 py-4">{formatDate(tx.date)}</td>
+                      <td className="px-6 py-4 font-mono font-bold text-blue-600">{tx.pin}</td>
+                      <td className="px-6 py-4 font-medium text-gray-900">{tx.userName}</td>
+                      <td className="px-6 py-4">{tx.description}</td>
+                      <td className="px-6 py-4 font-bold text-gray-900">{Math.abs(tx.amount).toFixed(2)} €</td>
+                      <td className="px-6 py-4 text-right">
+                        <button 
+                          onClick={() => setPayTransactionModalData({ unpaidId: tx.unpaidId, pin: tx.pin })} 
+                          className="text-xs px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-medium inline-flex items-center gap-1 transition-colors"
+                        >
+                          <CheckCircle className="h-3 w-3"/> Als bezahlt markieren
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const AccountingView = () => {
+    if (!accountingData) return null;
+    const { totalBalance = 0, externalSubRevenue = 0, externalCardDeposit = 0, weekdayCounts = {} } = accountingData;
+    const totalSystemMoney = totalBalance + externalSubRevenue + externalCardDeposit;
+
+    const days = [
+      { key: '1', label: 'Montag', count: weekdayCounts['1'] || 0 },
+      { key: '2', label: 'Dienstag', count: weekdayCounts['2'] || 0 },
+      { key: '3', label: 'Mittwoch', count: weekdayCounts['3'] || 0 },
+      { key: '4', label: 'Donnerstag', count: weekdayCounts['4'] || 0 },
+      { key: '5', label: 'Freitag', count: weekdayCounts['5'] || 0 },
+    ];
+    
+    const maxCount = Math.max(...days.map(d => d.count), 1);
+
+    return (
+      <div className="p-6 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+          <div className="flex flex-col">
+        <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
+          <button onClick={() => fetchDashboard()} className="hover:text-blue-600 flex items-center gap-1"><Home className="h-4 w-4"/> Dashboard</button>
+          <ChevronRight className="h-3 w-3" /><span>Buchhaltung</span>
+        </div>
+        <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3"><Calculator className="h-6 w-6 text-emerald-600" /> Buchhaltung & Auswertung</h2>
+</div>
+          
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-gray-200 shadow-sm">
+              <Calendar className="h-4 w-4 text-gray-400" />
+              <input 
+                type="date" 
+                value={accountingDates.start} 
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setAccountingDates(prev => ({...prev, start: val}));
+                  if(val && accountingDates.end) loadAccounting(val, accountingDates.end);
+                }} 
+                className="text-sm outline-none bg-transparent text-gray-700 font-medium" 
+              />
+              <span className="text-gray-300">-</span>
+              <input 
+                type="date" 
+                value={accountingDates.end} 
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setAccountingDates(prev => ({...prev, end: val}));
+                  if(accountingDates.start && val) loadAccounting(accountingDates.start, val);
+                }} 
+                className="text-sm outline-none bg-transparent text-gray-700 font-medium" 
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          
+          {/* Section 1: Kapital im System */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 flex flex-col">
+            <div className="flex justify-between items-center mb-6 gap-2">
+              <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <DollarSign className="h-5 w-5 text-emerald-500"/> Kapitalaufschlüsselung
+              </h3>
+              <button 
+                onClick={exportAccountingData}
+                disabled={isLoading}
+                className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-all shadow-sm active:scale-[0.98] disabled:opacity-50 whitespace-nowrap"
+              >
+                {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                <span className="hidden sm:inline">Excel Export</span>
+                <span className="sm:hidden">Export</span>
+              </button>
+            </div>
+            
+            <div className="space-y-4 flex-1">
+              <div className="flex justify-between items-center p-4 bg-gray-50 rounded-xl border border-gray-100">
+                <span className="text-gray-600 font-medium">Gesamteinzahlungen aller User</span>
+                <span className="text-lg font-bold text-gray-900">{totalBalance.toFixed(2)} €</span>
+              </div>
+              
+              <div className="flex justify-between items-center p-4 bg-blue-50 rounded-xl border border-blue-100">
+                <div className="flex flex-col">
+                  <span className="text-blue-800 font-medium">Wert externer Abokäufe</span>
+                  <span className="text-xs text-blue-600 mt-1">Ohne interne Guthabenverrechnung</span>
+                </div>
+                <span className="text-lg font-bold text-blue-700">{externalSubRevenue.toFixed(2)} €</span>
+              </div>
+
+              <div className="flex justify-between items-center p-4 bg-amber-50 rounded-xl border border-amber-100">
+                <div className="flex flex-col">
+                  <span className="text-amber-800 font-medium">Wert externer Kartenpfand</span>
+                  <span className="text-xs text-amber-600 mt-1">Ohne interne Guthabenverrechnung</span>
+                </div>
+                <span className="text-lg font-bold text-amber-700">{externalCardDeposit.toFixed(2)} €</span>
+              </div>
+              
+              <div className="pt-4 mt-2 border-t border-gray-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-800 font-bold text-lg">Geld im System gesamt</span>
+                  <span className="text-2xl font-black text-emerald-600">{totalSystemMoney.toFixed(2)} €</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Abos nach Wochentagen */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-800 mb-6 flex items-center gap-2">
+              <BarChart3 className="h-5 w-5 text-purple-500"/> Abos nach Wochentag
+            </h3>
+            
+            <div className="space-y-4">
+              {days.map(day => (
+                <div key={day.key} className="flex items-center gap-4">
+                  <div className="w-24 text-sm font-medium text-gray-600">{day.label}</div>
+                  <div className="flex-1 h-8 bg-gray-100 rounded-lg overflow-hidden relative flex items-center">
+                    <div 
+                      className="absolute left-0 top-0 bottom-0 bg-purple-200 transition-all duration-500"
+                      style={{ width: `${(day.count / maxCount) * 100}%` }}
+                    ></div>
+                    <span className="relative z-10 px-3 text-xs font-bold text-purple-900">
+                      {day.count} Abo{day.count !== 1 && 's'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
         </div>
       </div>
     );
@@ -1156,7 +1924,9 @@ export default function App() {
         {currentView.type === 'dashboard' && <Dashboard />}
         {currentView.type === 'parentDetail' && <ParentDetail />}
         {currentView.type === 'pendingCards' && <PendingCardsList />}
-        {currentView.type === 'unpaidAbos' && <UnpaidAbosList />}
+        {currentView.type === 'activeCards' && <ActiveCardsList />}
+        {currentView.type === 'unpaidTransactions' && <UnpaidTransactionsList />}
+        {currentView.type === 'accounting' && <AccountingView />}
       </main>
 
       {/* RENDER MODALS */}
@@ -1176,11 +1946,28 @@ export default function App() {
         />
       )}
 
+      {payTransactionModalData && (
+        <MarkTransactionPaidModal 
+          transactionData={payTransactionModalData} 
+          onClose={() => setPayTransactionModalData(null)} 
+          onComplete={submitPayTransaction} 
+        />
+      )}
+
       {depositModalData && (
         <DepositModal 
           parentId={depositModalData} 
           onClose={() => setDepositModalData(null)} 
           onComplete={submitDeposit} 
+        />
+      )}
+
+      {userSettingsModalData && (
+        <UserSettingsModal
+          user={userSettingsModalData}
+          onClose={() => setUserSettingsModalData(null)}
+          onUpdateRole={changeUserRole}
+          onDeleteAccount={deleteUserAccount}
         />
       )}
     </div>

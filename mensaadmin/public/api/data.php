@@ -52,13 +52,13 @@ try {
             'totalBalance' => 0.0,
             'activeCards' => 0,
             'pendingCards' => 0,
-            'unpaidAbos' => 0
+            'unpaidTransactions' => 0
         ];
 
         $response['stats']['totalBalance'] = (float) $pdo->query("SELECT SUM(balance) FROM accounts")->fetchColumn();
         $response['stats']['activeCards'] = (int) $pdo->query("SELECT COUNT(*) FROM chip_cards WHERE active = 1")->fetchColumn();
         $response['stats']['pendingCards'] = (int) $pdo->query("SELECT COUNT(*) FROM card_holders h LEFT JOIN chip_cards c ON h.holder_id = c.holder_id WHERE c.card_id IS NULL")->fetchColumn();
-        $response['stats']['unpaidAbos'] = (int) $pdo->query("SELECT COUNT(*) FROM subscriptions WHERE transaction_nr IS NULL OR transaction_nr = ''")->fetchColumn();
+        $response['stats']['unpaidTransactions'] = (int) $pdo->query("SELECT COUNT(*) FROM unpaid_transactions")->fetchColumn();
 
         $stmt = $pdo->query("
             SELECT t.transaction_id, a.user_id, t.occurred_at, t.amount, t.description, t.transaction_type 
@@ -97,10 +97,16 @@ try {
         $results = [];
 
         if (strlen($query) >= 2) {
-            $stmt = $pdo->prepare("SELECT id, email, CONCAT(vorname, ' ', nachname) AS name FROM users WHERE email LIKE ? OR vorname LIKE ? OR nachname LIKE ? LIMIT 5");
+            $stmt = $pdo->prepare("SELECT id, email, status, CONCAT(vorname, ' ', nachname) AS name FROM users WHERE email LIKE ? OR vorname LIKE ? OR nachname LIKE ? LIMIT 5");
             $stmt->execute([$searchTerm, $searchTerm, $searchTerm]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $results[] = ['title' => $row['name'], 'subtitle' => $row['email'], 'category' => 'Elternaccount', 'parentId' => 'p' . $row['id'], 'iconType' => 'Users'];
+                $roleMap = [
+                    'ADMIN' => 'Adminaccount',
+                    'TEACHER' => 'Lehreraccount',
+                    'USER' => 'Elternaccount'
+                ];
+                $categoryName = isset($roleMap[$row['status']]) ? $roleMap[$row['status']] : 'Elternaccount';
+                $results[] = ['title' => $row['name'], 'subtitle' => $row['email'], 'category' => $categoryName, 'parentId' => 'p' . $row['id'], 'iconType' => 'Users'];
             }
 
             $stmt = $pdo->prepare("SELECT h.holder_id, h.first_name, h.last_name, h.class, a.user_id FROM card_holders h JOIN accounts a ON h.created_by = a.account_id WHERE h.first_name LIKE ? OR h.last_name LIKE ? LIMIT 5");
@@ -211,29 +217,178 @@ try {
             ];
         }
     }
-    
-    elseif ($action === 'unpaid') {
-        $response['unpaidAbos'] = [];
+
+    elseif ($action === 'active_cards') {
+        $response['activeCards'] = [];
         $stmt = $pdo->query("
-            SELECT s.subscription_id, s.type, h.holder_id, CONCAT(h.first_name, ' ', h.last_name) AS student_name, h.class, u.id AS parent_id, CONCAT(u.vorname, ' ', u.nachname) AS parent_name
-            FROM subscriptions s
-            JOIN card_holders h ON s.holder_id = h.holder_id
+            SELECT c.card_id, c.card_uid, h.holder_id, CONCAT(h.first_name, ' ', h.last_name) AS student_name, h.class, 
+                   u.id AS parent_id, CONCAT(u.vorname, ' ', u.nachname) AS parent_name,
+                   (SELECT COUNT(*) FROM subscriptions s WHERE s.holder_id = h.holder_id AND s.start_date <= CURDATE() AND (s.end_date IS NULL OR s.end_date >= CURDATE()) AND s.transaction_nr IS NOT NULL AND s.transaction_nr != '') AS active_abo_count
+            FROM chip_cards c
+            JOIN card_holders h ON c.holder_id = h.holder_id
             JOIN accounts a ON h.created_by = a.account_id
             JOIN users u ON a.user_id = u.id
-            WHERE s.transaction_nr IS NULL OR s.transaction_nr = ''
+            WHERE c.active = 1
+            ORDER BY h.class, student_name
         ");
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $response['unpaidAbos'][] = [
-                'id' => 'abo' . $row['subscription_id'],
-                'planName' => $row['type'],
+            $response['activeCards'][] = [
+                'id' => 'c' . $row['card_id'],
+                'cardId' => 'c' . $row['card_id'],
+                'cardNumber' => $row['card_uid'],
                 'studentId' => 's' . $row['holder_id'],
                 'studentName' => $row['student_name'],
                 'grade' => $row['class'],
                 'parentId' => 'p' . $row['parent_id'],
-                'parentName' => $row['parent_name']
+                'parentName' => $row['parent_name'],
+                'hasActiveAbo' => $row['active_abo_count'] > 0
             ];
         }
     }
+    
+    elseif ($action === 'unpaid') {
+        $response['unpaidTransactions'] = [];
+        $stmt = $pdo->query("
+            SELECT ut.unpaid_id, ut.payment_pin, ut.subscription_id, 
+                   t.transaction_id, t.amount, t.description, t.transaction_type, t.occurred_at,
+                   u.id AS user_id, CONCAT(u.vorname, ' ', u.nachname) AS user_name
+            FROM unpaid_transactions ut
+            JOIN account_transactions t ON ut.transaction_id = t.transaction_id
+            JOIN accounts a ON ut.account_id = a.account_id
+            JOIN users u ON a.user_id = u.id
+            ORDER BY t.occurred_at DESC
+        ");
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $response['unpaidTransactions'][] = [
+                'unpaidId' => $row['unpaid_id'],
+                'pin' => $row['payment_pin'],
+                'subscriptionId' => $row['subscription_id'],
+                'transactionId' => $row['transaction_id'],
+                'amount' => (float)$row['amount'],
+                'description' => $row['description'],
+                'type' => $row['transaction_type'],
+                'date' => $row['occurred_at'],
+                'userId' => 'p' . $row['user_id'],
+                'userName' => $row['user_name']
+            ];
+        }
+    }
+
+    // --- NEUER ACCOUNTING BEREICH ---
+    elseif ($action === 'accounting') {
+        $startDate = ($_GET['start'] ?? '2000-01-01') . ' 00:00:00';
+        $endDate = ($_GET['end'] ?? date('Y-m-d')) . ' 23:59:59';
+
+        // 1. Gesamtguthaben aller User berechnet aus den TOPUP-Transaktionen
+        $stmt = $pdo->prepare("SELECT SUM(amount) FROM account_transactions WHERE transaction_type = 'TOPUP' AND occurred_at BETWEEN ? AND ?");
+        $stmt->execute([$startDate, $endDate]);
+        $response['totalBalance'] = (float) $stmt->fetchColumn();
+
+        // 2. Gesamtwert externer Abokäufe (Ausschließen von "(Guthaben)")
+        //    Da die Transaktionen im negativen Bereich liegen (-334.00), verwenden wir ABS()
+        $stmt = $pdo->prepare("
+            SELECT SUM(ABS(amount)) 
+            FROM account_transactions 
+            WHERE transaction_type = 'SUBSCRIPTION_PURCHASE' 
+            AND description NOT LIKE '%(Guthaben)%'
+            AND occurred_at BETWEEN ? AND ?
+        ");
+        $stmt->execute([$startDate, $endDate]);
+        $response['externalSubRevenue'] = (float) $stmt->fetchColumn();
+
+        // 3. Wert externer Kartenpfand
+        $stmt = $pdo->prepare("
+            SELECT SUM(ABS(amount))
+            FROM account_transactions 
+            WHERE transaction_type = 'DEPOSIT'
+            AND description NOT LIKE '%Guthaben%'
+            AND occurred_at BETWEEN ? AND ?
+        ");
+        $stmt->execute([$startDate, $endDate]);
+        $response['externalCardDeposit'] = (float) $stmt->fetchColumn();
+
+        // 4. Wochentags-Counter initialisieren
+        $weekdayCounts = ['1' => 0, '2' => 0, '3' => 0, '4' => 0, '5' => 0];
+        
+        // Alle eingetragenen Wochentage aus den AKTIVEN Abos auslesen und zusammenzählen
+        // Gültig: Startdatum ist erreicht UND (Enddatum ist nicht gesetzt ODER Enddatum liegt noch in der Zukunft/Heute)
+        // UND: Das Abo muss bezahlt sein (transaction_nr ist nicht leer)
+        $stmt = $pdo->query("
+            SELECT weekdays 
+            FROM subscriptions 
+            WHERE start_date <= CURDATE() 
+            AND (end_date IS NULL OR end_date >= CURDATE())
+        ");
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if (empty($row['weekdays'])) continue;
+            
+            $days = explode(',', $row['weekdays']);
+            foreach ($days as $d) {
+                $d = trim(strtoupper($d));
+                // Zählt den jeweiligen Tag (Unterstützt numerisch und Englisch)
+                if ($d === '1' || $d === 'MONDAY')    $weekdayCounts['1']++;
+                if ($d === '2' || $d === 'TUESDAY')   $weekdayCounts['2']++;
+                if ($d === '3' || $d === 'WEDNESDAY') $weekdayCounts['3']++;
+                if ($d === '4' || $d === 'THURSDAY')  $weekdayCounts['4']++;
+                if ($d === '5' || $d === 'FRIDAY')    $weekdayCounts['5']++;
+            }
+        }
+        $response['weekdayCounts'] = $weekdayCounts;
+    }
+    // --- ENDE ACCOUNTING BEREICH ---
+
+    // --- NEUER BEREICH: BUCHHALTUNG EXPORT ---
+    elseif ($action === 'accounting_export') {
+        $startDate = ($_GET['start'] ?? '2000-01-01') . ' 00:00:00';
+        $endDate = ($_GET['end'] ?? date('Y-m-d')) . ' 23:59:59';
+        
+        $response['transactions'] = [];
+        
+        // Hole alle für die Buchhaltung relevanten Transaktionen:
+        // 1. Alle echten Einzahlungen (TOPUP)
+        // 2. Alle externen Abokäufe (SUBSCRIPTION_PURCHASE ohne 'Guthaben')
+        // 3. Alle externen Kartenpfande (USAGE mit 'Kartenpfand' ohne 'Guthaben')
+        
+        // UPDATE: LEFT JOIN und COALESCE hinzugefügt, damit keine Zeilen wegen fehlender Accounts oder NULL-Beschreibungen verworfen werden.
+        $stmt = $pdo->prepare("
+            SELECT t.transaction_id, t.occurred_at, ABS(t.amount), t.description, t.transaction_type, 
+                   a.user_id, CONCAT(u.vorname, ' ', u.nachname) AS user_name
+            FROM account_transactions t
+            LEFT JOIN accounts a ON t.account_id = a.account_id
+            LEFT JOIN users u ON a.user_id = u.id
+            WHERE t.occurred_at BETWEEN ? AND ?
+            AND (
+                  t.transaction_type = 'TOPUP'
+               OR (t.transaction_type = 'SUBSCRIPTION_PURCHASE' AND COALESCE(t.description, '') NOT LIKE '%(Guthaben)%')
+               OR (t.transaction_type = 'DEPOSIT' AND COALESCE(t.description, '') NOT LIKE '%Guthaben%')
+            )
+            ORDER BY t.occurred_at DESC
+        ");
+        $stmt->execute([$startDate, $endDate]);
+        
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            // Typ-Übersetzung für die Excel-Tabelle
+            $typLabel = 'Unbekannt';
+            if ($row['transaction_type'] === 'TOPUP') {
+                $typLabel = 'Guthaben-Einzahlung';
+            } elseif ($row['transaction_type'] === 'SUBSCRIPTION_PURCHASE') {
+                $typLabel = 'Abo (Extern bezahlt)';
+            } elseif ($row['transaction_type'] === 'USAGE') {
+                $typLabel = 'Kartenpfand (Extern bezahlt)';
+            }
+
+            $response['transactions'][] = [
+                'id' => $row['transaction_id'],
+                'date' => $row['occurred_at'],
+                'amount' => (float) $row['amount'],
+                'description' => $row['description'],
+                'type' => $typLabel,
+                'userName' => $row['user_name'],
+                'userId' => $row['user_id']
+            ];
+        }
+    }
+    // --- ENDE BUCHHALTUNG EXPORT ---
 
     $jsonOutput = json_encode($response, JSON_INVALID_UTF8_SUBSTITUTE);
     if ($jsonOutput === false) throw new \Exception("JSON Error: " . json_last_error_msg());

@@ -139,12 +139,53 @@ try {
             $response['success'] = $stmt->execute([$aboId]);
             break;
 
-        case 'markAboPaid':
-            $aboId = (int) str_replace('abo', '', $data['aboId']);
-            // Hole übermittelte Transaktionsnummer (aus Methode + Datum generiert) oder Fallback
-            $txNr = $data['transactionNr'] ?? ('MANUAL_' . time());
+        case 'markTransactionPaid':
+            $unpaidId = (int) $data['unpaidId'];
+            $transactionNr = $data['transactionNr']; // z.B. "Überweisung 28.02.2025 123456"
+
+            $pdo->beginTransaction();
+
+            $stmt = $pdo->prepare("SELECT ut.subscription_id, ut.transaction_id, t.amount, t.description, t.transaction_type, t.account_id 
+                                   FROM unpaid_transactions ut
+                                   JOIN account_transactions t ON ut.transaction_id = t.transaction_id
+                                   WHERE ut.unpaid_id = ?");
+            $stmt->execute([$unpaidId]);
+            $ut = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($ut) {
+                // 1. Beschreibung der Transaktion aktualisieren 
+                // Ersetzt Klammern wie "(warten auf Zahlungseingang)" mit der neuen "(Überweisung ... PIN)"
+                $newDesc = preg_replace('/\s*\([^)]*(warten|ausstehend|Zahlungseingang|unbezahlt)[^)]*\)/i', " ($transactionNr)", $ut['description']);
+                if ($newDesc === $ut['description']) {
+                    // Falls nichts zum Ersetzen gefunden wurde, einfach anhängen
+                    $newDesc .= " ($transactionNr)";
+                }
+
+                $stmt = $pdo->prepare("UPDATE account_transactions SET description = ? WHERE transaction_id = ?");
+                $stmt->execute([$newDesc, $ut['transaction_id']]);
+
+                // 2. Abos Logik (falls die Zahlung mit einem Abo verknüpft ist)
+                if (!empty($ut['subscription_id'])) {
             $stmt = $pdo->prepare("UPDATE subscriptions SET transaction_nr = ? WHERE subscription_id = ?");
-            $response['success'] = $stmt->execute([$txNr, $aboId]);
+                    $stmt->execute([$transactionNr, $ut['subscription_id']]);
+                }
+
+                // 3. Aufladung Logik: Bei TOPUP wird die amount nun der Account Balance hinzugefügt
+                if ($ut['transaction_type'] === 'TOPUP') {
+                    $stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?");
+                    $stmt->execute([abs((float)$ut['amount']), $ut['account_id']]);
+                }
+
+                // 4. Aus unpaid_transactions löschen, da nun bezahlt
+                $stmt = $pdo->prepare("DELETE FROM unpaid_transactions WHERE unpaid_id = ?");
+                $stmt->execute([$unpaidId]);
+
+                $pdo->commit();
+                $response['success'] = true;
+            } else {
+                $pdo->rollBack();
+                $response['error'] = 'Unbezahlte Transaktion nicht gefunden.';
+            }
             break;
 
         case 'editStudent':
@@ -198,6 +239,91 @@ try {
                 if (in_array($key, $allowedKeys)) {
                     $stmt->execute([$value, $key]);
                 }
+            }
+            
+            $pdo->commit();
+            $response['success'] = true;
+            break;
+
+        case 'updateUserRole':
+            $stmt = $pdo->prepare("UPDATE users SET status = ? WHERE id = ?");
+            $stmt->execute([$data['role'], $data['userId']]);
+            $response['success'] = true;
+            break;
+
+        case 'deleteUserAccount':
+            $accountId = $data['userId'];
+            try {
+                $pdo->beginTransaction();
+                
+                // 1. Alle Karten der Kinder löschen
+                $pdo->prepare("DELETE FROM chip_cards WHERE account_id IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
+                
+                // 2. Alle Abos der Kinder löschen
+                $pdo->prepare("DELETE FROM subscriptions WHERE holder_id IN (SELECT holder_id FROM card_holders WHERE created_by IN (SELECT account_id FROM accounts WHERE user_id = ?))")->execute([$accountId]);
+                
+                // 3. Alle Kinder (Holder) löschen
+                $pdo->prepare("DELETE FROM card_holders WHERE created_by IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
+                
+                // 4. Alle Transaktionen löschen
+                $pdo->prepare("DELETE FROM account_transactions WHERE account_id IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
+                
+                // 5. Den Verrechnungsaccount löschen
+                $pdo->prepare("DELETE FROM accounts WHERE account_id IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
+
+                // 6. Hauptkonto löschen
+                $pdo->prepare("DELETE FROM users WHERE id  = ?")->execute([$accountId]);
+                
+                $pdo->commit();
+                $response['success'] = true;
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $response['error'] = 'Fehler bei der DSGVO-Löschung: ' . $e->getMessage();
+            }
+            break;
+
+        case 'collectCard':
+            // IDs bereinigen, falls Präfixe mitgeschickt werden (z.B. 'c1', 's2')
+            $cardId = (int) str_replace('c', '', $data['cardId']);
+            $studentId = (int) str_replace('s', '', $data['studentId']);
+            $deleteStudent = !empty($data['deleteStudent']);
+            
+            $pdo->beginTransaction();
+            
+            // 1. Account-ID der Karte ermitteln (für die Rückerstattung)
+            $stmt = $pdo->prepare("SELECT account_id FROM chip_cards WHERE card_id = ?");
+            $stmt->execute([$cardId]);
+            $accountId = $stmt->fetchColumn();
+            
+            if ($accountId) {
+                // 2. Aktuellen Pfand-Wert aus den Settings holen
+                $stmt = $pdo->query("SELECT def_value FROM default_values WHERE name = 'card_deposit'");
+                $depositAmount = (float) $stmt->fetchColumn();
+                
+                if ($depositAmount > 0) {
+                    // 3. Balance auf dem Eltern-Account erhöhen
+                    $stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?");
+                    $stmt->execute([$depositAmount, $accountId]);
+                    
+                    // 4. Transaktion "Pfand zurückerstattet" eintragen
+                    $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at) VALUES (?, ?, 'REFUND', 'Kartenpfand zurückerstattet', NOW())");
+                    $stmt->execute([$accountId, $depositAmount]);
+                }
+            }
+            
+            // 5. Karte aus dem System löschen
+            $stmt = $pdo->prepare("DELETE FROM chip_cards WHERE card_id = ?");
+            $stmt->execute([$cardId]);
+            
+            // 6. Falls $deleteStudent == true ist (Schüler hat keine aktiven Abos mehr)
+            if ($deleteStudent) {
+                // Lösche alle eventuell noch vorhandenen abgelaufenen Abos dieses Schülers
+                $stmt = $pdo->prepare("DELETE FROM subscriptions WHERE holder_id = ?");
+                $stmt->execute([$studentId]);
+                
+                // Lösche den Schüler (Holder) aus der Datenbank
+                $stmt = $pdo->prepare("DELETE FROM card_holders WHERE holder_id = ?");
+                $stmt->execute([$studentId]);
             }
             
             $pdo->commit();

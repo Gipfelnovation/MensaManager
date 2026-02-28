@@ -70,7 +70,23 @@ $currentBalance = (float)$account['balance'];
 // HILFSFUNKTIONEN FÜR DATENBANK-UPDATES
 // ==========================================
 
-function executeTopup($pdo, $accountId, $amount, $method, $transactionId = null) {
+function generatePaymentPin() {
+    return substr(str_shuffle("ABCDEFGHJKLMNPQRSTUVWXYZ23456789"), 0, 6);
+}
+
+function executeTopup($pdo, $accountId, $amount, $method, $transactionId = null, &$generatedPin = null) {
+    if ($method === 'Überweisung') {
+        $desc = "Aufladung (warten auf Zahlungseingang)";
+        
+        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'TOPUP', ?)")
+            ->execute([$accountId, $amount, $desc]);
+            
+        $newTxId = $pdo->lastInsertId();
+        $generatedPin = generatePaymentPin();
+        
+        $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, payment_pin) VALUES (?, ?, ?)")
+            ->execute([$accountId, $newTxId, $generatedPin]);
+    } else {
     $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?")->execute([$amount, $accountId]);
     
     $desc = "Aufladung ($method)";
@@ -81,8 +97,9 @@ function executeTopup($pdo, $accountId, $amount, $method, $transactionId = null)
     $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'TOPUP', ?)")
         ->execute([$accountId, $amount, $desc]);
 }
+}
 
-function executeOrderCard($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null) {
+function executeOrderCard($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null) {
     $firstName = $data['firstName'] ?? '';
     $lastName = $data['lastName'] ?? '';
     $class = $data['class'] ?? '';
@@ -104,20 +121,29 @@ function executeOrderCard($pdo, $accountId, $currentBalance, $data, $paymentMeth
     $descPayment = "Kartenpfand";
     if ($paymentMethod === 'PayPal/Klarna' && $transactionId) {
         $descPayment .= " (Paypal TAN: " . $transactionId . ")";
+    } elseif ($paymentMethod === 'Überweisung') {
+        $descPayment .= " (Überweisung ausstehend)";
     }
 
     if ($balanceDeduction > 0) {
         $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE account_id = ?")->execute([$balanceDeduction, $accountId]);
-        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'USAGE', ?)")
+        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
             ->execute([$accountId, -$balanceDeduction, $descGuthaben]);
     }
     if ($remainingToPay > 0) {
-        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'USAGE', ?)")
+        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
             ->execute([$accountId, -$remainingToPay, $descPayment]);
+            
+        $newTxId = $pdo->lastInsertId();
+        if ($paymentMethod === 'Überweisung') {
+            $generatedPin = generatePaymentPin();
+            $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, payment_pin) VALUES (?, ?, ?)")
+                ->execute([$accountId, $newTxId, $generatedPin]);
+        }
     }
 }
 
-function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null) {
+function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null) {
     $type = $data['type'] ?? 'halb';
     $days = $data['days'] ?? [];
     $cardOption = $data['cardOption'] ?? 'existing';
@@ -172,6 +198,7 @@ function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod,
 
     $stmt = $pdo->prepare("INSERT INTO subscriptions (holder_id, type, weekdays, start_date, end_date, transaction_nr) VALUES (?, ?, ?, CURDATE(), ?, ?)");
     $stmt->execute([$holderId, $dbType, $weekdaysSet, $endDate, $transactionId]);
+    $subID = $pdo->lastInsertId();
 
     $aboName = ($type === 'halb') ? 'Halbjahresabo' : 'Ganzjahresabo';
     
@@ -179,6 +206,8 @@ function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod,
     $descPayment = "$aboName";
     if ($paymentMethod === 'PayPal/Klarna' && $transactionId) {
         $descPayment .= " (Paypal TAN: " . $transactionId . ")";
+    } elseif ($paymentMethod === 'Überweisung') {
+        $descPayment .= " (Überweisung ausstehend)";
     }
 
     if ($balanceDeduction > 0) {
@@ -189,6 +218,13 @@ function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod,
     if ($remainingToPay > 0) {
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'SUBSCRIPTION_PURCHASE', ?)")
             ->execute([$accountId, -$remainingToPay, $descPayment]);
+            
+        $newTxId = $pdo->lastInsertId();
+        if ($paymentMethod === 'Überweisung') {
+            $generatedPin = generatePaymentPin();
+            $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, subscription_id, payment_pin) VALUES (?, ?, ?, ?)")
+                ->execute([$accountId, $newTxId, $subID, $generatedPin]);
+        }
     }
 }
 
@@ -227,16 +263,25 @@ function executeReorderCard($pdo, $accountId, $currentBalance, $data, $paymentMe
     $descPayment = "Ersatzkarte";
     if ($paymentMethod === 'PayPal/Klarna' && $transactionId) {
         $descPayment .= " (Paypal TAN: " . $transactionId . ")";
+    } elseif ($paymentMethod === 'Überweisung') {
+        $descPayment .= " (Überweisung ausstehend)";
     }
 
     if ($balanceDeduction > 0) {
         $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE account_id = ?")->execute([$balanceDeduction, $accountId]);
-        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'USAGE', ?)")
+        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
             ->execute([$accountId, -$balanceDeduction, $descGuthaben]);
     }
     if ($remainingToPay > 0) {
-        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'USAGE', ?)")
+        $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
             ->execute([$accountId, -$remainingToPay, $descPayment]);
+            
+        $newTxId = $pdo->lastInsertId();
+        if ($paymentMethod === 'Überweisung') {
+            $generatedPin = generatePaymentPin();
+            $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, payment_pin) VALUES (?, ?, ?)")
+                ->execute([$accountId, $newTxId, $generatedPin]);
+        }
     }
 }
 
@@ -402,20 +447,28 @@ if (in_array($action, ['topup', 'order_card', 'buy_abo', 'block_card', 'reorder_
     $paymentMethod = $input['paymentMethod'] ?? 'Guthaben';
     try {
         $pdo->beginTransaction();
+        $responseData = ['status' => 'success'];
+        $generatedPin = null;
+        
         if ($action === 'topup') {
             $amount = (float)($input['amount'] ?? 0);
-            executeTopup($pdo, $accountId, $amount, $paymentMethod);
+            executeTopup($pdo, $accountId, $amount, $paymentMethod, null, $generatedPin);
         } elseif ($action === 'order_card') {
-            executeOrderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod);
+            executeOrderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin);
         } elseif ($action === 'buy_abo') {
-            executeBuyAbo($pdo, $accountId, $currentBalance, $input, $paymentMethod);
+            executeBuyAbo($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin);
         } elseif ($action === 'block_card') {
             executeBlockCard($pdo, $accountId, $input);
         } elseif ($action === 'reorder_card') {
-            executeReorderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod);
+            executeReorderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin);
         }
+        
+        if ($generatedPin) {
+            $responseData['payment_pin'] = $generatedPin;
+        }
+
         $pdo->commit();
-        echo json_encode(['status' => 'success']);
+        echo json_encode($responseData);
     } catch (\PDOException $e) {
         if (isset($pdo) && $pdo->inTransaction()) { $pdo->rollBack(); }
         error_log("Database Error: " . $e->getMessage());

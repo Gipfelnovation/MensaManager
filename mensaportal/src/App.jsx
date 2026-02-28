@@ -54,9 +54,123 @@ const Modal = ({ isOpen, onClose, title, children }) => {
   );
 };
 
+// --- LEGAL TEXT COMPONENT (NEU) ---
+const LegalText = ({ type }) => (
+  <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm text-slate-700 space-y-4 text-left">
+    <h2 className="text-2xl font-bold mb-4 text-slate-800">{type === 'impressum' ? 'Impressum' : 'Datenschutzerklärung'}</h2>
+    {type === 'impressum' ? (
+       <div className="space-y-4 text-sm leading-relaxed">
+         <p><strong>Angaben gemäß § 5 TMG</strong></p>
+         <p>Mensaverein Ho'gau e.V.<br/>Schulstraße 1<br/>12345 Musterstadt</p>
+         <p><strong>Vertreten durch:</strong><br/>Max Mustermann (1. Vorsitzender)</p>
+         <p><strong>Kontakt:</strong><br/>E-Mail: info@mensaverein-hogau.de<br/>Telefon: +49 (0) 123 456789</p>
+         <p><strong>Registereintrag:</strong><br/>Eintragung im Vereinsregister.<br/>Registergericht: Amtsgericht Musterstadt<br/>Registernummer: VR 12345</p>
+       </div>
+    ) : (
+       <div className="space-y-4 text-sm leading-relaxed">
+         <h3 className="text-lg font-bold text-slate-800">1. Datenschutz auf einen Blick</h3>
+         <p><strong>Allgemeine Hinweise</strong><br/>Die folgenden Hinweise geben einen einfachen Überblick darüber, was mit Ihren personenbezogenen Daten passiert, wenn Sie unsere Website besuchen. Personenbezogene Daten sind alle Daten, mit denen Sie persönlich identifiziert werden können.</p>
+         <h3 className="text-lg font-bold text-slate-800">2. Datenerfassung auf dieser Website</h3>
+         <p><strong>Wer ist verantwortlich für die Datenerfassung auf dieser Website?</strong><br/>Die Datenverarbeitung auf dieser Website erfolgt durch den Websitebetreiber. Die Kontaktdaten können Sie dem Impressum entnehmen.</p>
+         <p><strong>Wie erfassen wir Ihre Daten?</strong><br/>Ihre Daten werden zum einen dadurch erhoben, dass Sie uns diese mitteilen. Hierbei kann es sich z. B. um Daten handeln, die Sie in ein Registrierungsformular eingeben. Andere Daten werden automatisch beim Besuch der Website durch unsere IT-Systeme erfasst (z.B. IP-Adresse).</p>
+         <p><strong>Wofür nutzen wir Ihre Daten?</strong><br/>Ein Teil der Daten wird erhoben, um eine fehlerfreie Bereitstellung der Website zu gewährleisten. Andere Daten werden zur Verwaltung Ihrer Prepaid-Guthaben und Chipkarten verwendet.</p>
+       </div>
+    )}
+  </div>
+);
+
 // --- DYNAMISCHE CHECKOUT KOMPONENTE (Paypal/Klarna/Manuell) ---
 const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManualSubmit, onSucceed, onProcessing, onFinished, isLoading, user }) => {
-  
+  const paypalRef = React.useRef(null);
+  const [isScriptLoaded, setIsScriptLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    if (paymentMethod !== 'paypal' && paymentMethod !== 'klarna') return;
+
+    const scriptId = 'paypal-sdk-script';
+    let script = document.getElementById(scriptId);
+
+    if (script) {
+      setIsScriptLoaded(true);
+      return;
+    }
+
+    script = document.createElement("script");
+    script.id = scriptId;
+    script.src = `https://www.paypal.com/sdk/js?client-id=***REMOVED***&currency=EUR&intent=capture&components=buttons,funding-eligibility`;
+    script.async = true;
+    
+    script.onload = () => setIsScriptLoaded(true);
+    document.body.appendChild(script);
+  }, [paymentMethod]);
+
+  React.useEffect(() => {
+    if (isScriptLoaded && window.paypal && paypalRef.current && (paymentMethod === 'paypal' || paymentMethod === 'klarna')) {
+      paypalRef.current.innerHTML = '';
+      
+      try {
+        window.paypal.Buttons({
+          style: { layout: "vertical", shape: "rect", color: paymentMethod === 'klarna' ? 'white' : 'gold' },
+          fundingSource: paymentMethod === 'klarna' ? window.paypal.FUNDING.KLARNA : window.paypal.FUNDING.PAYPAL,
+          createOrder: () => {
+            return fetch("/api/actions.php?action=create_paypal_order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                amount: amount, 
+                actionType: actionType, 
+                actionData: actionData 
+              }),
+            })
+            .then(res => res.json())
+            .then(orderData => {
+              if (orderData.id) {
+                return orderData.id;
+              } else {
+                throw new Error(orderData.message || orderData.error || "Fehler beim Erstellen der Order");
+              }
+            })
+            .catch(error => {
+              console.error("PayPal createOrder Fehler:", error);
+              alert(error.message || "Konnte keine Verbindung zu PayPal herstellen.");
+              throw error;
+            });
+          },
+          onApprove: (data, actions) => {
+            if (onProcessing) onProcessing(); // Button deaktivieren & Lade-Spinner zeigen
+            return fetch("/api/actions.php?action=capture_paypal_order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ orderID: data.orderID })
+            })
+            .then(res => res.json())
+            .then(result => {
+              if (result.status === 'success' || result.status === 'COMPLETED') {
+                // Bei Erfolg direkt die Ansicht aktualisieren
+                onSucceed();
+              } else {
+                throw new Error(result.message || "Zahlung konnte nicht abgeschlossen werden.");
+              }
+            })
+            .catch(error => {
+              console.error("PayPal onApprove Fehler:", error);
+              alert(error.message || "Sorry, die Zahlung konnte nicht verarbeitet werden.");
+            })
+            .finally(() => {
+              if (onFinished) onFinished(); // Lade-Spinner wieder aufheben
+            });
+          },
+          onError: (err) => {
+            console.error("PayPal Error:", err);
+            alert("Es gab ein Problem bei der Zahlungsabwicklung.");
+          }
+        }).render(paypalRef.current);
+      } catch (err) {
+        console.error("PayPal Render Error:", err);
+      }
+    }
+  }, [isScriptLoaded, paymentMethod, amount, actionType, actionData, onProcessing, onSucceed, onFinished]);
+
   // Szenario 1: Alles über Guthaben abgedeckt
   if (amount <= 0) {
     return (
@@ -78,13 +192,13 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
         <div className="bg-blue-50 text-blue-900 p-5 rounded-xl text-sm border border-blue-200 shadow-inner">
           <p className="font-bold mb-3 flex items-center gap-2"><Landmark size={18}/> Bitte überweise den Betrag an:</p>
           <div className="space-y-2 font-mono">
-            <p className="flex justify-between"><span>Empfänger:</span> <strong>Mensaverein Ho'gau e.V.</strong></p>
-            <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
-            <p className="flex justify-between"><span>BIC:</span> <strong>GENODE12345</strong></p>
+            <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
+                  <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
+                  <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
             <div className="mt-3 pt-3 border-t border-blue-200">
               <p className="text-xs text-blue-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (WICHTIG):</p>
               <p className="font-bold text-lg bg-white px-3 py-2 rounded border border-blue-100 text-center select-all shadow-sm">
-                {user.email}
+                Wird im nächsten Schritt generiert
               </p>
             </div>
           </div>
@@ -105,63 +219,12 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
   // Szenario 3: PayPal & Klarna via SDK
   return (
     <div className="relative z-0 min-h-[150px] animate-in fade-in duration-300">
-      <PayPalButtons
-        forceReRender={[amount, paymentMethod]}
-        style={{ layout: "vertical", shape: "rect", color: paymentMethod === 'klarna' ? 'white' : 'gold' }}
-        fundingSource={paymentMethod}
-        createOrder={() => {
-          return fetch("/api/actions.php?action=create_paypal_order", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              amount: amount, 
-              actionType: actionType, 
-              actionData: actionData 
-            }),
-          })
-          .then(res => res.json())
-          .then(orderData => {
-            if (orderData.id) {
-              return orderData.id;
-            } else {
-              throw new Error(orderData.message || orderData.error || "Fehler beim Erstellen der Order");
-            }
-          })
-          .catch(error => {
-            console.error("PayPal createOrder Fehler:", error);
-            alert(error.message || "Konnte keine Verbindung zu PayPal herstellen.");
-            throw error;
-          });
-        }}
-        onApprove={(data, actions) => {
-          if (onProcessing) onProcessing(); // Button deaktivieren & Lade-Spinner zeigen
-          return fetch("/api/actions.php?action=capture_paypal_order", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ orderID: data.orderID })
-          })
-          .then(res => res.json())
-          .then(result => {
-            if (result.status === 'success' || result.status === 'COMPLETED') {
-              // Bei Erfolg direkt die Ansicht aktualisieren
-              onSucceed();
-            } else {
-              throw new Error(result.message || "Zahlung konnte nicht abgeschlossen werden.");
-            }
-          })
-          .catch(error => {
-            console.error("PayPal onApprove Fehler:", error);
-            alert(error.message || "Sorry, die Zahlung konnte nicht verarbeitet werden.");
-          })
-          .finally(() => {
-            if (onFinished) onFinished(); // Lade-Spinner wieder aufheben
-          });
-        }}
-        onError={(err) => {
-          console.error("PayPal Error:", err);
-          alert("Es gab ein Problem bei der Zahlungsabwicklung.");
-        }}
-      />
+      {!isScriptLoaded ? (
+        <div className="flex justify-center items-center h-[150px]">
+          <Loader2 className="animate-spin text-blue-600" size={32} />
+        </div>
+      ) : null}
+      <div ref={paypalRef} className={!isScriptLoaded ? 'hidden' : 'block'}></div>
     </div>
   );
 };
@@ -190,6 +253,10 @@ export default function App() {
   // Auth States für Formulare
   const [authData, setAuthData] = useState({ firstName: '', lastName: '', email: '', password: '', passwordConfirm: '' });
   const [authError, setAuthError] = useState('');
+  
+  // NEU: States für Passwort zurücksetzen nach PHP-Einfach
+  const [resetToken, setResetToken] = useState('');
+  const [resetSuccessMsg, setResetSuccessMsg] = useState('');
 
   // UI State für abgelaufene Abos
   const [showExpiredAbos, setShowExpiredAbos] = useState(false);
@@ -263,6 +330,17 @@ export default function App() {
           });
         }
       }).catch(err => console.error("Could not fetch prices", err));
+
+    // NEU: Passwort zurücksetzen Token aus URL lesen (PHP-Einfach Logik)
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    const passwortVergessen = urlParams.get('passwort_vergessen');
+    if (token) {
+      setAuthMode('reset_password');
+      setResetToken(token);
+    } else if (passwortVergessen) {
+      setAuthMode('forgot_password');
+    }
   }, []);
   
   // Abo Shop State
@@ -282,6 +360,7 @@ export default function App() {
   const [topUpStep, setTopUpStep] = useState('choose');
   const [topUpAmount, setTopUpAmount] = useState(20);
   const [topUpPayment, setTopUpPayment] = useState('paypal');
+  const [paymentPin, setPaymentPin] = useState(''); // Globaler PIN State für alle Überweisungen
 
   const [isOrderCardOpen, setIsOrderCardOpen] = useState(false);
   const [orderCardStep, setOrderCardStep] = useState('form');
@@ -366,6 +445,66 @@ export default function App() {
     });
   };
 
+  // NEU: Handler für Passwort anfordern
+  const handleForgotPassword = (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setResetSuccessMsg('');
+    setIsAuthLoading(true);
+
+    fetch('/api/data.php?action=forgot_password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: authData.email })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'success') {
+        setResetSuccessMsg('Falls diese E-Mail registriert ist, haben wir dir einen Link zum Zurücksetzen gesendet.');
+        setAuthData({...authData, email: ''});
+      } else {
+        setAuthError(data.message || 'Ein Fehler ist aufgetreten.');
+      }
+    })
+    .catch(() => setAuthError('Netzwerkfehler. Bitte Server prüfen.'))
+    .finally(() => setIsAuthLoading(false));
+  };
+
+  // NEU: Handler für neues Passwort setzen
+  const handleResetPassword = (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setResetSuccessMsg('');
+    
+    if (authData.password !== authData.passwordConfirm) {
+      setAuthError('Die Passwörter stimmen nicht überein.');
+      return;
+    }
+
+    setIsAuthLoading(true);
+
+    fetch('/api/data.php?action=reset_password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ token: resetToken, passwort: authData.password })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'success') {
+        setAuthMode('login');
+        setResetSuccessMsg('Passwort erfolgreich geändert. Du kannst dich nun einloggen.');
+        setAuthData({...authData, password: '', passwordConfirm: ''});
+        window.history.pushState({}, document.title, window.location.pathname); // Token aus URL entfernen
+      } else {
+        setAuthError(data.message || 'Fehler beim Zurücksetzen des Passworts.');
+      }
+    })
+    .catch(() => setAuthError('Netzwerkfehler. Bitte Server prüfen.'))
+    .finally(() => setIsAuthLoading(false));
+  };
+
   // --- MANUELLE CHECKOUT CALLBACKS (Für Überweisung / Guthaben) ---
 
   const handleManualTopUp = (method) => {
@@ -379,8 +518,13 @@ export default function App() {
     .then(r => r.json())
     .then(data => {
       if(data.status === 'success') {
+        if (method === 'Überweisung' && data.payment_pin) {
+          setPaymentPin(data.payment_pin);
+          setTopUpStep('success-ueberweisung');
+        } else {
         showToast(`Die Aufladung über ${method} wurde initiiert.`);
         setIsTopUpOpen(false);
+        }
         fetchUserData(false);
       } else {
         showToast(data.message || 'Fehler beim Aufladen.');
@@ -410,6 +554,9 @@ export default function App() {
     .then(r => r.json())
     .then(data => {
       if(data.status === 'success') {
+        if (method === 'Überweisung' && data.payment_pin) {
+          setPaymentPin(data.payment_pin);
+        }
         setOrderCardStep('success');
         fetchUserData(false);
       } else {
@@ -434,34 +581,9 @@ export default function App() {
     .then(r => r.json())
     .then(data => {
       if(data.status === 'success') {
-        setLostCardStep('success-block');
-        fetchUserData(false);
-      } else {
-        showToast(data.message || 'Fehler beim Sperren.');
-      }
-    })
-    .catch(err => {
-      console.error(err);
-      showToast('Verbindungsfehler. Bitte versuche es erneut.');
-    })
-    .finally(() => setIsActionLoading(false));
-  };
-
-  const handleManualReorderCard = (method) => {
-    setIsActionLoading(true);
-    fetch('/api/actions.php?action=reorder_card', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        holderId: lostCardData.card.holderId,
-        useBalance: lostCardData.useBalance,
-        paymentMethod: method
-      })
-    })
-    .then(r => r.json())
-    .then(data => {
-      if(data.status === 'success') {
+        if (method === 'Überweisung' && data.payment_pin) {
+          setPaymentPin(data.payment_pin);
+        }
         setLostCardStep('success-reorder');
         fetchUserData(false);
       } else {
@@ -494,7 +616,10 @@ export default function App() {
     .then(r => r.json())
     .then(data => {
       if(data.status === 'success') {
-        if (shopData.cardOption === 'new') {
+        if (method === 'Überweisung' && data.payment_pin) {
+          setPaymentPin(data.payment_pin);
+        }
+        if (shopData.cardOption === 'new' || method === 'Überweisung') {
           setAboStep(5);
           fetchUserData(false);
         } else {
@@ -663,96 +788,150 @@ export default function App() {
   if (!isLoggedIn || !user) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
-        <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100">
-          <div className="bg-blue-600 p-8 text-center">
-            <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
-              <Utensils className="text-white" size={32} />
+        
+        {/* Impressum & Datenschutz Views VOR dem Login */}
+        {(authMode === 'impressum' || authMode === 'datenschutz') ? (
+           <div className="w-full max-w-2xl mt-8">
+             <button onClick={() => setAuthMode('login')} className="flex items-center gap-2 text-slate-500 font-bold text-sm mb-4 hover:text-slate-800 transition-colors">
+               <ChevronLeft size={16} /> Zurück zum Login
+             </button>
+             <LegalText type={authMode} />
+           </div>
+        ) : (
+        <>
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100">
+            <div className="bg-blue-600 p-8 text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
+                <Utensils className="text-white" size={32} />
+              </div>
+              <h1 className="text-2xl font-bold text-white">MensaPay</h1>
+              <p className="text-blue-100 mt-1">Das Ho'gauer Schulverpflegungs-Portal</p>
             </div>
-            <h1 className="text-2xl font-bold text-white">MensaPay</h1>
-            <p className="text-blue-100 mt-1">Das Ho'gauer Schulverpflegungs-Portal</p>
+            
+            <div className="p-8">
+              <h2 className="text-xl font-bold text-slate-800 mb-6">
+                {authMode === 'login' && 'Willkommen zurück!'}
+                {authMode === 'register' && 'Eltern-Account erstellen'}
+                {authMode === 'forgot_password' && 'Passwort zurücksetzen'}
+                {authMode === 'reset_password' && 'Neues Passwort vergeben'}
+              </h2>
+              
+              {authError && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-sm font-medium flex items-center gap-2">
+                  <AlertCircle size={16} /> {authError}
+                </div>
+              )}
+
+              {resetSuccessMsg && (
+                <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-xl text-sm font-medium flex items-center gap-2">
+                  <CheckCircle2 size={16} /> {resetSuccessMsg}
+                </div>
+              )}
+              
+              <form 
+                onSubmit={
+                  authMode === 'login' ? handleLogin : 
+                  authMode === 'register' ? handleRegister : 
+                  authMode === 'forgot_password' ? handleForgotPassword :
+                  handleResetPassword
+                } 
+                className="space-y-4"
+              >
+                {authMode === 'register' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Vorname (Elternteil)</label>
+                      <input required type="text" value={authData.firstName} onChange={e => setAuthData({...authData, firstName: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="Anna" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Nachname</label>
+                      <input required type="text" value={authData.lastName} onChange={e => setAuthData({...authData, lastName: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="Mustermann" />
+                    </div>
+                  </div>
+                )}
+                
+                {(authMode === 'login' || authMode === 'register' || authMode === 'forgot_password') && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">E-Mail Adresse</label>
+                    <input required type="email" value={authData.email} onChange={e => setAuthData({...authData, email: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="mail@beispiel.de" />
+                  </div>
+                )}
+                
+                {(authMode === 'login' || authMode === 'register' || authMode === 'reset_password') && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">{authMode === 'reset_password' ? 'Neues Passwort' : 'Passwort'}</label>
+                    <input required type="password" value={authData.password} onChange={e => setAuthData({...authData, password: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
+                  </div>
+                )}
+
+                {(authMode === 'register' || authMode === 'reset_password') && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Passwort wiederholen</label>
+                    <input required type="password" value={authData.passwordConfirm} onChange={e => setAuthData({...authData, passwordConfirm: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
+                  </div>
+                )}
+                
+                <button 
+                  type="submit" 
+                  disabled={isAuthLoading}
+                  className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20 mt-6 flex justify-center items-center gap-2"
+                >
+                  {isAuthLoading ? (
+                    <>
+                      <Loader2 className="animate-spin" size={20} />
+                      Bitte warten...
+                    </>
+                  ) : (
+                    authMode === 'login' ? 'Einloggen' : 
+                    authMode === 'register' ? 'Registrieren' :
+                    authMode === 'forgot_password' ? 'Link anfordern' :
+                    'Passwort speichern'
+                  )}
+                </button>
+              </form>
+              
+              <div className="mt-6 text-center space-y-3">
+                {(authMode === 'login' || authMode === 'register' || authMode === 'forgot_password') && (
+                  <button 
+                    type="button"
+                    disabled={isAuthLoading}
+                    onClick={() => {
+                      setAuthMode(authMode === 'login' ? 'register' : 'login');
+                      setAuthError('');
+                      setResetSuccessMsg('');
+                    }}
+                    className="block w-full text-sm text-slate-500 hover:text-blue-600 disabled:opacity-50 font-medium transition-colors"
+                  >
+                    {authMode === 'login' ? 'Noch kein Account? Hier registrieren.' : 'Bereits registriert? Hier einloggen.'}
+                  </button>
+                )}
+
+                {authMode === 'login' && (
+                  <button 
+                    type="button" 
+                    onClick={() => { setAuthMode('forgot_password'); setAuthError(''); setResetSuccessMsg(''); }} 
+                    className="block w-full text-sm text-blue-500 hover:text-blue-700 font-medium transition-colors"
+                  >
+                    Passwort vergessen?
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
           
-          <div className="p-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-6">
-              {authMode === 'login' ? 'Willkommen zurück!' : 'Eltern-Account erstellen'}
-            </h2>
-            
-            {authError && (
-              <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-sm font-medium flex items-center gap-2">
-                <AlertCircle size={16} /> {authError}
-              </div>
-            )}
-            
-            <form onSubmit={authMode === 'login' ? handleLogin : handleRegister} className="space-y-4">
-              {authMode === 'register' && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Vorname (Elternteil)</label>
-                    <input required type="text" value={authData.firstName} onChange={e => setAuthData({...authData, firstName: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="Anna" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Nachname</label>
-                    <input required type="text" value={authData.lastName} onChange={e => setAuthData({...authData, lastName: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="Mustermann" />
-                  </div>
-                </div>
-              )}
-              
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">E-Mail Adresse</label>
-                <input required type="email" value={authData.email} onChange={e => setAuthData({...authData, email: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="mail@beispiel.de" />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Passwort</label>
-                <input required type="password" value={authData.password} onChange={e => setAuthData({...authData, password: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
-              </div>
-
-              {authMode === 'register' && (
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Passwort wiederholen</label>
-                  <input required type="password" value={authData.passwordConfirm} onChange={e => setAuthData({...authData, passwordConfirm: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
-                </div>
-              )}
-              
-              <button 
-                type="submit" 
-                disabled={isAuthLoading}
-                className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20 mt-6 flex justify-center items-center gap-2"
-              >
-                {isAuthLoading ? (
-                  <>
-                    <Loader2 className="animate-spin" size={20} />
-                    {authMode === 'login' ? 'Wird angemeldet...' : 'Wird registriert...'}
-                  </>
-                ) : (
-                  authMode === 'login' ? 'Einloggen' : 'Registrieren'
-                )}
-              </button>
-            </form>
-            
-            <div className="mt-6 text-center">
-              <button 
-                type="button"
-                disabled={isAuthLoading}
-                onClick={() => {
-                  setAuthMode(authMode === 'login' ? 'register' : 'login');
-                  setAuthError('');
-                }}
-                className="text-sm text-slate-500 hover:text-blue-600 disabled:opacity-50 font-medium transition-colors"
-              >
-                {authMode === 'login' ? 'Noch kein Account? Hier registrieren.' : 'Bereits registriert? Hier einloggen.'}
-              </button>
-            </div>
+          <div className="mt-8 text-center text-sm text-slate-500 flex justify-center gap-6">
+            <button onClick={() => setAuthMode('impressum')} className="hover:text-blue-600 transition-colors">Impressum</button>
+            <button onClick={() => setAuthMode('datenschutz')} className="hover:text-blue-600 transition-colors">Datenschutz</button>
           </div>
-        </div>
+        </>
+        )}
       </div>
     );
   }
 
   // --- Main App Wrapper (PayPal Context) ---
   return (
-    <PayPalScriptProvider options={paypalOptions}>
-      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20 md:pb-0">
+      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20 md:pb-0 flex flex-col">
         <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
           <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
             <div className="flex items-center gap-2 text-blue-600">
@@ -784,7 +963,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="max-w-5xl mx-auto p-4 py-8">
+        <main className="max-w-5xl mx-auto p-4 py-8 flex-1 w-full">
           
           {/* TAB: DASHBOARD */}
           {activeTab === 'dashboard' && (
@@ -1279,12 +1458,32 @@ export default function App() {
                     <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
                       <CheckCircle2 size={40} />
                     </div>
-                    <h3 className="text-2xl font-bold text-slate-800">Abo & Profil angelegt!</h3>
-                    <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
-                      <p className="mb-3">Das neue Schülerprofil und das Abo wurden erfolgreich im System registriert.</p>
-                      <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für den nächsten Schritt:</p>
-                      <p className="mt-1">Die physische Chipkarte muss noch ausgegeben werden. Bitte wende dich (oder der Schüler) an eine <strong>Lehrkraft in der Schule</strong>, um eine freie Karte zu erhalten. Erst danach ist die Karte vollständig in der Verwaltung sichtbar und für das Essen nutzbar.</p>
-                    </div>
+                    <h3 className="text-2xl font-bold text-slate-800">Abo erfolgreich gebucht!</h3>
+                    
+                    {aboPayment === 'ueberweisung' && paymentPin && (
+                      <div className="bg-amber-50 text-amber-900 p-5 rounded-xl text-sm border border-amber-200 text-left mb-6">
+                        <p className="font-bold mb-3">Zahlung ausstehend. Bitte überweise den fälligen Betrag an:</p>
+                        <div className="space-y-2 font-mono">
+                          <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
+                          <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
+                          <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                        </div>
+                        <div className="mt-4 pt-4 border-t border-amber-200">
+                          <p className="text-xs text-amber-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
+                          <p className="font-bold text-2xl bg-white px-3 py-3 rounded-lg border-2 border-amber-300 text-center select-all shadow-sm tracking-widest">
+                            MENSA {paymentPin}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {shopData.cardOption === 'new' && (
+                      <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
+                        <p className="mb-3">Das neue Schülerprofil und das Abo wurden erfolgreich im System registriert.</p>
+                        <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für den nächsten Schritt:</p>
+                        <p className="mt-1">Die physische Chipkarte muss noch ausgegeben werden. Bitte wende dich (oder der Schüler) an eine <strong>Lehrkraft in der Schule</strong>, um eine freie Karte zu erhalten. Erst danach ist die Karte vollständig in der Verwaltung sichtbar und für das Essen nutzbar.</p>
+                      </div>
+                    )}
                     <button 
                       onClick={() => {
                         setActiveTab('abos');
@@ -1300,7 +1499,20 @@ export default function App() {
             </div>
           )}
 
+          {/* TAB: LEGAL (Impressum & Datenschutz im eingeloggten Bereich) */}
+          {(activeTab === 'impressum' || activeTab === 'datenschutz') && (
+            <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <LegalText type={activeTab} />
+            </div>
+          )}
+
         </main>
+
+        <footer className="w-full max-w-5xl mx-auto p-4 text-center text-sm text-slate-500 hidden md:block">
+          <button onClick={() => setActiveTab('impressum')} className="hover:text-blue-600 transition-colors mx-3">Impressum</button>
+          |
+          <button onClick={() => setActiveTab('datenschutz')} className="hover:text-blue-600 transition-colors mx-3">Datenschutz</button>
+        </footer>
 
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 pb-safe z-40">
           <div className="flex justify-around items-center h-16">
@@ -1316,6 +1528,12 @@ export default function App() {
               <CreditCard size={20} className={activeTab === 'karten' ? 'fill-blue-50' : ''} />
               <span className="text-[10px] font-medium">Karten</span>
             </button>
+            
+            {/* Mobile Footer Links direkt im Menü */}
+            <div className="hidden">
+              <button onClick={() => setActiveTab('impressum')} />
+              <button onClick={() => setActiveTab('datenschutz')} />
+            </div>
           </div>
         </nav>
 
@@ -1442,6 +1660,36 @@ export default function App() {
               </div>
               <button onClick={() => setIsTopUpOpen(false)} className="w-full mt-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition-colors">
                 Verstanden
+              </button>
+            </div>
+          )}
+
+          {topUpStep === 'success-ueberweisung' && (
+            <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
+              <div className="w-20 h-20 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
+                <Landmark size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800">Überweisung ausstehend</h3>
+              <div className="bg-blue-50 text-blue-900 p-5 rounded-xl text-sm border border-blue-200 text-left">
+                <p className="font-bold mb-3">Bitte überweise den Betrag ({Number(topUpAmount).toFixed(2).replace('.', ',')} €) an:</p>
+                <div className="space-y-2 font-mono">
+                  <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
+                  <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
+                  <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                </div>
+                <div className="mt-4 pt-4 border-t border-blue-200">
+                  <p className="text-xs text-blue-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
+                  <p className="font-bold text-2xl bg-white px-3 py-3 rounded-lg border-2 border-blue-300 text-center select-all shadow-sm tracking-widest">
+                    MENSA {paymentPin}
+                  </p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 mt-4">Dein Guthaben wird automatisch gutgeschrieben, sobald der Betrag mit dem korrekten Verwendungszweck eingegangen ist (Dauer: 1-3 Werktage).</p>
+              <button 
+                onClick={() => setIsTopUpOpen(false)}
+                className="w-full mt-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-sm transition-colors"
+              >
+                Verstanden, Fenster schließen
               </button>
             </div>
           )}
@@ -1580,8 +1828,26 @@ export default function App() {
                 <CheckCircle2 size={40} />
               </div>
               <h3 className="text-2xl font-bold text-slate-800">Schülerprofil angelegt!</h3>
+
+              {orderCardPayment === 'ueberweisung' && paymentPin && (
+                <div className="bg-amber-50 text-amber-900 p-5 rounded-xl text-sm border border-amber-200 text-left mb-6">
+                  <p className="font-bold mb-3">Zahlung ausstehend. Bitte überweise den fälligen Betrag an:</p>
+                  <div className="space-y-2 font-mono">
+                    <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
+                    <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
+                    <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                  </div>
+                  <div className="mt-4 pt-4 border-t border-amber-200">
+                    <p className="text-xs text-amber-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
+                    <p className="font-bold text-2xl bg-white px-3 py-3 rounded-lg border-2 border-amber-300 text-center select-all shadow-sm tracking-widest">
+                      MENSA {paymentPin}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
-                <p className="mb-3">Das Schülerprofil wurde erfolgreich im System registriert und die Pfandgebühr beglichen.</p>
+                <p className="mb-3">Das Schülerprofil wurde erfolgreich im System registriert und die Pfandgebühr {orderCardPayment !== 'ueberweisung' && 'beglichen.'}</p>
                 <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für den nächsten Schritt:</p>
                 <p className="mt-1">Die physische Chipkarte muss noch ausgegeben werden. Bitte wende dich (oder der Schüler) an eine <strong>Lehrkraft in der Schule</strong>, um eine freie Karte zu erhalten. Erst danach ist die Karte vollständig in der Verwaltung sichtbar und nutzbar.</p>
               </div>
@@ -1741,6 +2007,24 @@ export default function App() {
                 <CheckCircle2 size={40} />
               </div>
               <h3 className="text-2xl font-bold text-slate-800">Ersatzkarte beantragt</h3>
+
+              {lostCardData.paymentMethod === 'ueberweisung' && paymentPin && (
+                <div className="bg-amber-50 text-amber-900 p-5 rounded-xl text-sm border border-amber-200 text-left mb-6">
+                  <p className="font-bold mb-3">Zahlung ausstehend. Bitte überweise den fälligen Betrag an:</p>
+                  <div className="space-y-2 font-mono">
+                    <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
+                    <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
+                    <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                  </div>
+                  <div className="mt-4 pt-4 border-t border-amber-200">
+                    <p className="text-xs text-amber-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
+                    <p className="font-bold text-2xl bg-white px-3 py-3 rounded-lg border-2 border-amber-300 text-center select-all shadow-sm tracking-widest">
+                      MENSA {paymentPin}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
                 <p className="mb-3">Die alte Karte wurde gelöscht und der Antrag für eine neue Karte erfolgreich hinterlegt.</p>
                 <p className="font-bold flex items-center gap-2"><CreditCard size={18}/> Wichtig für die Ausgabe:</p>
@@ -1764,6 +2048,5 @@ export default function App() {
           </div>
         )}
       </div>
-    </PayPalScriptProvider>
   );
 }

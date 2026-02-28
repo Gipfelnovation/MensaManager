@@ -17,9 +17,48 @@ session_start();
 require_once($_SERVER['DOCUMENT_ROOT'] . "/api/config.inc.php");
 require_once($_SERVER['DOCUMENT_ROOT'] . "/api/functions.inc.php");
 
+// --- KONFIGURATION LOGINSICHERHEIT ---
+$max_attempts = 5;               // Maximale Fehlversuche
+$lockout_time = 15;              // Sperrzeit in Minuten
+$recaptcha_secret = '***REMOVED***';
+
+$ip_address = $_SERVER['REMOTE_ADDR'];
+
+// 1. Alte (abgelaufene) Login-Versuche bereinigen
+$pdo->query("DELETE FROM login_attempts WHERE last_attempt < (NOW() - INTERVAL $lockout_time MINUTE)");
+
+// 2. Prüfen, ob die IP aktuell gesperrt ist
+$stmt = $pdo->prepare("SELECT attempts FROM login_attempts WHERE ip_address = ?");
+$stmt->execute([$ip_address]);
+$attempts = $stmt->fetchColumn();
+
+if ($attempts && $attempts >= $max_attempts) {
+    http_response_code(429);
+    echo json_encode(['success' => false, 'error' => 'Zu viele fehlgeschlagene Logins. Bitte warte ' . $lockout_time . ' Minuten.']);
+    exit;
+}
+
 // Da React die Daten als JSON Body sendet, lesen wir sie hier aus
 $input = json_decode(file_get_contents('php://input'), true);
 
+// 3. Captcha validieren
+$captchaToken = $input['captcha'] ?? '';
+if (empty($captchaToken)) {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'Bitte bestätige, dass du kein Roboter bist (Captcha fehlt).']);
+    exit;
+}
+
+$verifyResponse = file_get_contents('https://www.google.com/recaptcha/api/siteverify?secret=' . $recaptcha_secret . '&response=' . $captchaToken);
+$responseData = json_decode($verifyResponse);
+
+if (!$responseData->success) {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'Captcha-Überprüfung fehlgeschlagen. Bitte lade die Seite neu.']);
+    exit;
+}
+
+// 4. Eigentlicher Login-Prozess
 if (isset($input['email']) && isset($input['passwort'])) {
     $email = $input['email'];
     $passwort = $input['passwort'];
@@ -33,6 +72,10 @@ if (isset($input['email']) && isset($input['passwort'])) {
         
         // ZUGANGSKONTROLLE: Nur Admins reinlassen!
         if ($user['status'] === "ADMIN") {
+            
+            // BEI ERFOLG: IP aus den Fehlversuchen löschen
+            $stmt = $pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
+            $stmt->execute([$ip_address]);
             
             $_SESSION['userid'] = $user['id'];
             
@@ -82,10 +125,30 @@ if (isset($input['email']) && isset($input['passwort'])) {
             exit;
         }
     } else {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'error' => 'E-Mail oder Passwort war ungültig']);
-        exit;
+        // Falsches Passwort oder Email -> Wird wie ein Fehlversuch behandelt
+        $errorMsg = 'E-Mail oder Passwort war ungültig.';
+        $httpCode = 401;
     }
+    
+    // --- FEHLGESCHLAGENER LOGIN (Passwort falsch oder kein Admin) ---
+    $stmt = $pdo->prepare("INSERT INTO login_attempts (ip_address, attempts, last_attempt) 
+                           VALUES (?, 1, NOW()) 
+                           ON DUPLICATE KEY UPDATE attempts = attempts + 1, last_attempt = NOW()");
+    $stmt->execute([$ip_address]);
+    
+    $attemptsNow = ($attempts ? $attempts : 0) + 1;
+    $remaining = $max_attempts - $attemptsNow;
+
+    if ($remaining <= 0) {
+        $errorMsg = 'Zu viele fehlgeschlagene Logins. Bitte warte ' . $lockout_time . ' Minuten.';
+        $httpCode = 429;
+    } else {
+        $errorMsg .= " Noch $remaining Versuch(e) übrig.";
+    }
+
+    http_response_code($httpCode);
+    echo json_encode(['success' => false, 'error' => $errorMsg]);
+    exit;
 }
 
 http_response_code(400);
