@@ -20,6 +20,8 @@ session_start();
 
 // --- PAYPAL SDK IMPORTS ---
 require_once __DIR__ . '/paypal/vendor/autoload.php';
+// --- MAILER IMPORT ---
+require_once __DIR__ . '/mailer.php';
 
 use PaypalServerSdkLib\Authentication\ClientCredentialsAuthCredentialsBuilder;
 use PaypalServerSdkLib\Environment;
@@ -70,8 +72,25 @@ $currentBalance = (float)$account['balance'];
 // HILFSFUNKTIONEN FÜR DATENBANK-UPDATES
 // ==========================================
 
+// NEU: Hilfsfunktion für asynchronen Response & Weiterlauf im Hintergrund
+function sendJsonResponseAndContinueBackground($responseData) {
+    if (session_id()) session_write_close();
+    ignore_user_abort(true);
+    set_time_limit(0);
+    ob_start();
+    echo json_encode($responseData);
+    $size = ob_get_length();
+    header("Content-Type: application/json; charset=utf-8");
+    header("Connection: close");
+    header("Content-Length: $size");
+    ob_end_flush();
+    @ob_flush();
+    flush();
+    if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+}
+
 function generatePaymentPin() {
-    return substr(str_shuffle("ABCDEFGHJKLMNPQRSTUVWXYZ23456789"), 0, 6);
+    return strtoupper(substr(str_shuffle("ABCDEFGHJKLMNPQRSTUVWXYZ23456789"), 0, 6));
 }
 
 function executeTopup($pdo, $accountId, $amount, $method, $transactionId = null, &$generatedPin = null) {
@@ -90,8 +109,8 @@ function executeTopup($pdo, $accountId, $amount, $method, $transactionId = null,
     $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?")->execute([$amount, $accountId]);
     
     $desc = "Aufladung ($method)";
-    if ($method === 'PayPal/Klarna' && $transactionId) {
-        $desc = "Aufladung (Paypal TAN: " . $transactionId . ")";
+        if ($transactionId) {
+            $desc = "Aufladung ($method TAN: " . $transactionId . ")";
     }
 
     $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'TOPUP', ?)")
@@ -99,7 +118,7 @@ function executeTopup($pdo, $accountId, $amount, $method, $transactionId = null,
 }
 }
 
-function executeOrderCard($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null) {
+function executeOrderCard($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null, &$amountToPay = 0) {
     $firstName = $data['firstName'] ?? '';
     $lastName = $data['lastName'] ?? '';
     $class = $data['class'] ?? '';
@@ -112,38 +131,37 @@ function executeOrderCard($pdo, $accountId, $currentBalance, $data, $paymentMeth
 
     $balanceDeduction = ($useBalance && $currentBalance > 0) ? min($cardCost, $currentBalance) : 0;
     $remainingToPay = $cardCost - $balanceDeduction;
+    $amountToPay = $remainingToPay;
 
     $stmt = $pdo->prepare("INSERT INTO card_holders (first_name, last_name, class, created_by) VALUES (?, ?, ?, ?)");
     $stmt->execute([$firstName, $lastName, $class, $accountId]);
-    $holderId = $pdo->lastInsertId();
 
-    $descGuthaben = "Kartenpfand (Guthaben)";
-    $descPayment = "Kartenpfand";
-    if ($paymentMethod === 'PayPal/Klarna' && $transactionId) {
-        $descPayment .= " (Paypal TAN: " . $transactionId . ")";
+    $descPayment = "Kartenpfand ($paymentMethod";
+    if ($transactionId) {
+        $descPayment .= " TAN: $transactionId)";
     } elseif ($paymentMethod === 'Überweisung') {
-        $descPayment .= " (Überweisung ausstehend)";
+        $descPayment .= " ausstehend)";
+    } else {
+        $descPayment .= ")";
     }
 
     if ($balanceDeduction > 0) {
         $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE account_id = ?")->execute([$balanceDeduction, $accountId]);
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
-            ->execute([$accountId, -$balanceDeduction, $descGuthaben]);
+            ->execute([$accountId, -$balanceDeduction, "Kartenpfand (Guthaben)"]);
     }
     if ($remainingToPay > 0) {
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
             ->execute([$accountId, -$remainingToPay, $descPayment]);
-            
-        $newTxId = $pdo->lastInsertId();
         if ($paymentMethod === 'Überweisung') {
             $generatedPin = generatePaymentPin();
             $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, payment_pin) VALUES (?, ?, ?)")
-                ->execute([$accountId, $newTxId, $generatedPin]);
+                ->execute([$accountId, $pdo->lastInsertId(), $generatedPin]);
         }
     }
 }
 
-function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null) {
+function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null, &$amountToPay = 0) {
     $type = $data['type'] ?? 'halb';
     $days = $data['days'] ?? [];
     $cardOption = $data['cardOption'] ?? 'existing';
@@ -157,134 +175,255 @@ function executeBuyAbo($pdo, $accountId, $currentBalance, $data, $paymentMethod,
         $dbPrices[$row['name']] = (float)$row['def_value'];
     }
 
-    $depositCost = $dbPrices['card_deposit'];
-    $basePrice = ($type === 'halb') ? $dbPrices['half_year_per_day'] : $dbPrices['full_year_per_day'];
-    
-    $daysCost = count($days) * $basePrice;
-    $cardCost = ($cardOption === 'new') ? $depositCost : 0;
-    $totalPrice = $daysCost + $cardCost;
-
+    $totalPrice = (count($days) * ($type === 'halb' ? $dbPrices['half_year_per_day'] : $dbPrices['full_year_per_day'])) + ($cardOption === 'new' ? $dbPrices['card_deposit'] : 0);
     $balanceDeduction = ($useBalance && $currentBalance > 0) ? min($totalPrice, $currentBalance) : 0;
     $remainingToPay = $totalPrice - $balanceDeduction;
-
-    $holderId = null;
+    $amountToPay = $remainingToPay;
 
     if ($cardOption === 'new') {
-        $stmt = $pdo->prepare("INSERT INTO card_holders (first_name, last_name, class, created_by) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$newStudent['firstName'], $newStudent['lastName'], $newStudent['class'], $accountId]);
+        $pdo->prepare("INSERT INTO card_holders (first_name, last_name, class, created_by) VALUES (?, ?, ?, ?)")
+            ->execute([$newStudent['firstName'], $newStudent['lastName'], $newStudent['class'], $accountId]);
         $holderId = $pdo->lastInsertId();
     } else {
-        $stmt = $pdo->prepare("SELECT holder_id FROM card_holders WHERE holder_id = ? AND created_by = ?");
-        $stmt->execute([$selectedHolderId, $accountId]);
-        $res = $stmt->fetch();
-        if (!$res) throw new Exception("Ausgewähltes Profil nicht gefunden.");
-        $holderId = $res['holder_id'];
+        $holderId = $selectedHolderId;
     }
 
-    $dbType = ($type === 'halb') ? 'HALF_YEAR' : 'FULL_YEAR';
-    $dayMap = ['Mo'=>'MONDAY', 'Di'=>'TUESDAY', 'Mi'=>'WEDNESDAY', 'Do'=>'THURSDAY', 'Fr'=>'FRIDAY'];
-    $dbDays = array_map(function($d) use ($dayMap) { return $dayMap[$d] ?? $d; }, $days);
-    $weekdaysSet = implode(',', $dbDays);
+    $endDate = (date('m') > ($type === 'halb' ? 1 : 7) ? date('Y')+1 : date('Y')) . ($type === 'halb' ? '-01-31' : '-07-31');
+    $pdo->prepare("INSERT INTO subscriptions (holder_id, type, weekdays, start_date, end_date, transaction_nr) VALUES (?, ?, ?, CURDATE(), ?, ?)")
+        ->execute([$holderId, ($type === 'halb' ? 'HALF_YEAR' : 'FULL_YEAR'), implode(',', $days), $endDate, $transactionId]);
+    $subId = $pdo->lastInsertId();
 
-    $year = date('Y');
-    $endMonth = ($type === 'halb') ? '01-31' : '07-31';
-    if (($type === 'halb' && date('m') > 1) || ($type === 'ganz' && date('m') > 7)) { $year++; }
-    $endDate = "$year-$endMonth";
-
-    // Transaktionsnummer für Guthabenkäufe setzen
-    if (!$transactionId && $paymentMethod === 'Guthaben') {
-        $transactionId = "Guthaben " . date('d.m.Y H:i');
-    }
-
-    $stmt = $pdo->prepare("INSERT INTO subscriptions (holder_id, type, weekdays, start_date, end_date, transaction_nr) VALUES (?, ?, ?, CURDATE(), ?, ?)");
-    $stmt->execute([$holderId, $dbType, $weekdaysSet, $endDate, $transactionId]);
-    $subID = $pdo->lastInsertId();
-
-    $aboName = ($type === 'halb') ? 'Halbjahresabo' : 'Ganzjahresabo';
-    
-    $descGuthaben = "$aboName (Guthaben)";
-    $descPayment = "$aboName";
-    if ($paymentMethod === 'PayPal/Klarna' && $transactionId) {
-        $descPayment .= " (Paypal TAN: " . $transactionId . ")";
+    $descPayment = ($type === 'halb' ? 'Halbjahresabo' : 'Ganzjahresabo') . " ($paymentMethod";
+    if ($transactionId) {
+        $descPayment .= " TAN: $transactionId)";
     } elseif ($paymentMethod === 'Überweisung') {
-        $descPayment .= " (Überweisung ausstehend)";
+        $descPayment .= " ausstehend)";
+    } else {
+        $descPayment .= ")";
     }
 
     if ($balanceDeduction > 0) {
         $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE account_id = ?")->execute([$balanceDeduction, $accountId]);
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'SUBSCRIPTION_PURCHASE', ?)")
-            ->execute([$accountId, -$balanceDeduction, $descGuthaben]);
-    }
+            ->execute([$accountId, -$balanceDeduction, ($type === 'halb' ? 'Halbjahresabo' : 'Ganzjahresabo') . " (Guthaben)"]);
+        }
     if ($remainingToPay > 0) {
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'SUBSCRIPTION_PURCHASE', ?)")
             ->execute([$accountId, -$remainingToPay, $descPayment]);
-            
-        $newTxId = $pdo->lastInsertId();
         if ($paymentMethod === 'Überweisung') {
             $generatedPin = generatePaymentPin();
             $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, subscription_id, payment_pin) VALUES (?, ?, ?, ?)")
-                ->execute([$accountId, $newTxId, $subID, $generatedPin]);
+                ->execute([$accountId, $pdo->lastInsertId(), $subId, $generatedPin]);
         }
     }
 }
 
 function executeBlockCard($pdo, $accountId, $data) {
-    $holderId = $data['holderId'] ?? '';
-    $cardUId = $data['cardId'] ?? '';
-    
-    $stmt = $pdo->prepare("SELECT holder_id FROM card_holders WHERE holder_id = ? AND created_by = ?");
-    $stmt->execute([$holderId, $accountId]);
-    if (!$stmt->fetch()) throw new Exception("Profil nicht gefunden oder keine Berechtigung.");
-    
-    $pdo->prepare("UPDATE chip_cards SET active = 0, deactivated_at = CURDATE() WHERE card_uid = ? AND holder_id = ?")
-        ->execute([$cardUId, $holderId]);
+    $pdo->prepare("UPDATE chip_cards SET active = 0, deactivated_at = CURDATE() WHERE card_uid = ? AND holder_id IN (SELECT holder_id FROM card_holders WHERE created_by = ?)")
+        ->execute([$data['cardId'], $accountId]);
 }
 
-function executeReorderCard($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null) {
-    $holderId = $data['holderId'] ?? '';
-    $useBalance = $data['useBalance'] ?? false;
-    
+function executeReorderCard($pdo, $accountId, $currentBalance, $data, $paymentMethod, $transactionId = null, &$generatedPin = null, &$amountToPay = 0) {
     $stmtVal = $pdo->prepare("SELECT def_value FROM default_values WHERE name = 'card_deposit'");
     $stmtVal->execute();
     $res = $stmtVal->fetch();
     $cardCost = $res ? (float)$res['def_value'] : 5.00;
 
-    $balanceDeduction = ($useBalance && $currentBalance > 0) ? min($cardCost, $currentBalance) : 0;
+    $balanceDeduction = ($data['useBalance'] && $currentBalance > 0) ? min($cardCost, $currentBalance) : 0;
     $remainingToPay = $cardCost - $balanceDeduction;
+    $amountToPay = $remainingToPay;
 
-    $stmt = $pdo->prepare("SELECT holder_id FROM card_holders WHERE holder_id = ? AND created_by = ?");
-    $stmt->execute([$holderId, $accountId]);
-    if (!$stmt->fetch()) throw new Exception("Profil nicht gefunden oder keine Berechtigung.");
-
-    // Alte Karte löschen (FK ON DELETE SET NULL sorgt für Transaktionserhalt)
-    $pdo->prepare("DELETE FROM chip_cards WHERE holder_id = ?")->execute([$holderId]);
-
-    $descGuthaben = "Ersatzkarte (Guthaben)";
-    $descPayment = "Ersatzkarte";
-    if ($paymentMethod === 'PayPal/Klarna' && $transactionId) {
-        $descPayment .= " (Paypal TAN: " . $transactionId . ")";
+    $pdo->prepare("DELETE FROM chip_cards WHERE holder_id = ?")->execute([$data['holderId']]);
+    
+    $descPayment = "Ersatzkarte ($paymentMethod";
+    if ($transactionId) {
+        $descPayment .= " TAN: $transactionId)";
     } elseif ($paymentMethod === 'Überweisung') {
-        $descPayment .= " (Überweisung ausstehend)";
+        $descPayment .= " ausstehend)";
+    } else {
+        $descPayment .= ")";
     }
 
     if ($balanceDeduction > 0) {
         $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE account_id = ?")->execute([$balanceDeduction, $accountId]);
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
-            ->execute([$accountId, -$balanceDeduction, $descGuthaben]);
+            ->execute([$accountId, -$balanceDeduction, "Ersatzkarte (Guthaben)"]);
     }
     if ($remainingToPay > 0) {
         $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description) VALUES (?, ?, 'DEPOSIT', ?)")
             ->execute([$accountId, -$remainingToPay, $descPayment]);
-            
-        $newTxId = $pdo->lastInsertId();
         if ($paymentMethod === 'Überweisung') {
             $generatedPin = generatePaymentPin();
             $pdo->prepare("INSERT INTO unpaid_transactions (account_id, transaction_id, payment_pin) VALUES (?, ?, ?)")
-                ->execute([$accountId, $newTxId, $generatedPin]);
+                ->execute([$accountId, $pdo->lastInsertId(), $generatedPin]);
         }
     }
 }
 
+// ==========================================
+// KLARNA API INTEGRATION (DIREKT ÜBER SDK)
+// ==========================================
+
+const KLARNA_UID = '***REMOVED***'; // Ersetze mit deinen Klarna API Credentials
+const KLARNA_PW  = '***REMOVED***';
+const KLARNA_URL = 'https://api.playground.klarna.com'; // Für Live: https://api.klarna.com
+
+function klarnaRequest($endpoint, $data = null) {
+    $ch = curl_init(KLARNA_URL . $endpoint);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_USERPWD, KLARNA_UID . ":" . KLARNA_PW);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    if ($data) {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    }
+    $response = curl_exec($ch);
+    $info = curl_getinfo($ch);
+    curl_close($ch);
+    return ['status' => $info['http_code'], 'body' => json_decode($response, true)];
+}
+
+if ($action === 'create_klarna_session') {
+    $actionType = $input['actionType'] ?? '';
+    $actionData = $input['actionData'] ?? [];
+    $amount = (float)($input['amount'] ?? 0);
+
+    if ($actionType !== 'topup') {
+    $stmtVals = $pdo->query("SELECT name, def_value FROM default_values WHERE name IN ('card_deposit', 'full_year_per_day', 'half_year_per_day')");
+    $dbPrices = ['card_deposit' => 5.0, 'full_year_per_day' => 120.0, 'half_year_per_day' => 80.0];
+    while ($row = $stmtVals->fetch()) {
+        $dbPrices[$row['name']] = (float)$row['def_value'];
+    }
+        $cardDeposit = $dbPrices['card_deposit'];
+        
+        if ($actionType === 'order_card' || $actionType === 'reorder_card') {
+            $useBalance = $actionData['useBalance'] ?? false;
+            $balanceDeduction = ($useBalance && $currentBalance > 0) ? min($cardDeposit, $currentBalance) : 0;
+            $amount = $cardDeposit - $balanceDeduction;
+        } elseif ($actionType === 'buy_abo') {
+            $type = $actionData['type'] ?? 'halb';
+            $days = $actionData['days'] ?? [];
+            $cardOption = $actionData['cardOption'] ?? 'existing';
+            $useBalance = $actionData['useBalance'] ?? false;
+
+    $basePrice = ($type === 'halb') ? $dbPrices['half_year_per_day'] : $dbPrices['full_year_per_day'];
+    $daysCost = count($days) * $basePrice;
+            $cardCost = ($cardOption === 'new') ? $cardDeposit : 0;
+    $totalPrice = $daysCost + $cardCost;
+
+    $balanceDeduction = ($useBalance && $currentBalance > 0) ? min($totalPrice, $currentBalance) : 0;
+            $amount = $totalPrice - $balanceDeduction;
+        }
+    }
+    
+    $amount = max(0, $amount);
+    $order_amount = (int)round($amount * 100);
+
+    $sessionData = [
+        "purchase_country" => "DE",
+        "purchase_currency" => "EUR",
+        "locale" => "de-DE",
+        "order_amount" => $order_amount,
+        "order_tax_amount" => 0,
+        "order_lines" => [
+            [
+                "type" => "digital",
+                "name" => "MensaPay Service",
+                "quantity" => 1,
+                "unit_price" => $order_amount,
+                "tax_rate" => 0,
+                "total_amount" => $order_amount,
+                "total_tax_amount" => 0
+            ]
+        ]
+    ];
+
+    $res = klarnaRequest('/payments/v1/sessions', $sessionData);
+    if ($res['status'] >= 200 && $res['status'] < 300) {
+        $_SESSION['klarna_intent'] = ['actionType' => $actionType, 'actionData' => $actionData, 'amount' => $amount, 'session_id' => $res['body']['session_id']];
+        echo json_encode(['client_token' => $res['body']['client_token']]);
+    } else {
+        error_log("Klarna Session Error: " . print_r($res, true));
+        echo json_encode(['status' => 'error', 'message' => 'Klarna-Sitzung konnte nicht erstellt werden.']);
+    }
+    exit;
+}
+
+if ($action === 'place_klarna_order') {
+    $authToken = $input['authorization_token'] ?? '';
+    $intent = $_SESSION['klarna_intent'] ?? null;
+
+    if (!$intent || !$authToken) {
+        echo json_encode(['status' => 'error', 'message' => 'Ungültige Klarna Sitzung.']);
+        exit;
+    }
+
+    $order_amount = (int)round($intent['amount'] * 100);
+    $orderData = [
+        "purchase_country" => "DE",
+        "purchase_currency" => "EUR",
+        "locale" => "de-DE",
+        "order_amount" => $order_amount,
+        "order_tax_amount" => 0,
+        "order_lines" => [
+            [
+                "type" => "digital",
+                "name" => "MensaPay Service",
+                "quantity" => 1,
+                "unit_price" => $order_amount,
+                "tax_rate" => 0,
+                "total_amount" => $order_amount,
+                "total_tax_amount" => 0
+            ]
+        ]
+    ];
+
+    $res = klarnaRequest('/payments/v1/authorizations/' . $authToken . '/order', $orderData);
+
+    if ($res['status'] >= 200 && $res['status'] < 300) {
+        $klarnaOrderId = $res['body']['order_id'];
+        
+        try {
+            $pdo->beginTransaction();
+        $actionType = $intent['actionType'];
+        $actionData = $intent['actionData'];
+            $paymentMethod = 'Klarna';
+            $generatedPin = null;
+            $amountToNotify = $intent['amount'];
+
+            if ($actionType === 'topup') {
+                executeTopup($pdo, $accountId, $intent['amount'], $paymentMethod, $klarnaOrderId, $generatedPin);
+            } elseif ($actionType === 'order_card') {
+                executeOrderCard($pdo, $accountId, $currentBalance, $actionData, $paymentMethod, $klarnaOrderId, $generatedPin, $amountToNotify);
+            } elseif ($actionType === 'buy_abo') {
+                executeBuyAbo($pdo, $accountId, $currentBalance, $actionData, $paymentMethod, $klarnaOrderId, $generatedPin, $amountToNotify);
+            } elseif ($actionType === 'reorder_card') {
+                executeReorderCard($pdo, $accountId, $currentBalance, $actionData, $paymentMethod, $klarnaOrderId, $generatedPin, $amountToNotify);
+            }
+
+        $pdo->commit();
+        unset($_SESSION['klarna_intent']);
+            
+            $stmtUser = $pdo->prepare("SELECT vorname, email FROM users WHERE id = ?");
+            $stmtUser->execute([$userId]);
+            $userData = $stmtUser->fetch();
+            
+            sendJsonResponseAndContinueBackground(['status' => 'success']);
+            
+            if ($userData && !empty($userData['email'])) {
+                sendOrderConfirmationEmail($userData['email'], $userData['vorname'], $actionType, $amountToNotify, $paymentMethod, $actionData, $generatedPin);
+            }
+            exit;
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+    } else {
+        error_log("Klarna Order Error: " . print_r($res, true));
+        echo json_encode(['status' => 'error', 'message' => 'Klarna-Zahlung konnte nicht finalisiert werden.']);
+    }
+    exit;
+}
 
 // ==========================================
 // PAYPAL: 1. ORDER ERSTELLEN
@@ -407,7 +546,7 @@ if ($action === 'capture_paypal_order') {
                 
                 $actionType = $intent['actionType'];
                 $actionData = $intent['actionData'];
-                $paymentMethod = 'PayPal/Klarna';
+                $paymentMethod = 'PayPal';
 
                 if ($actionType === 'topup') {
                     executeTopup($pdo, $accountId, $intent['amount'], $paymentMethod, $transactionId);
@@ -421,7 +560,24 @@ if ($action === 'capture_paypal_order') {
 
                 $pdo->commit();
                 unset($_SESSION['paypal_intent_' . $orderID]);
-                echo json_encode(['status' => 'success']);
+                
+                // NEU: E-Mail asynchron im Hintergrund versenden
+                $stmtUser = $pdo->prepare("SELECT vorname, email FROM users WHERE id = ?");
+                $stmtUser->execute([$userId]);
+                $userData = $stmtUser->fetch();
+                
+                sendJsonResponseAndContinueBackground(['status' => 'success']);
+                
+                if ($userData && !empty($userData['email'])) {
+                    sendOrderConfirmationEmail(
+                        $userData['email'], 
+                        $userData['vorname'], 
+                        $actionType, 
+                        $intent['amount'], 
+                        $paymentMethod, 
+                        $actionData
+                    );
+                }
                 exit;
             } else {
                 throw new Exception("Security Error: Order Intent wurde nicht gefunden.");
@@ -449,18 +605,20 @@ if (in_array($action, ['topup', 'order_card', 'buy_abo', 'block_card', 'reorder_
         $pdo->beginTransaction();
         $responseData = ['status' => 'success'];
         $generatedPin = null;
+        $amountToNotify = 0;
         
         if ($action === 'topup') {
-            $amount = (float)($input['amount'] ?? 0);
-            executeTopup($pdo, $accountId, $amount, $paymentMethod, null, $generatedPin);
+            $amountToNotify = (float)($input['amount'] ?? 0);
+            executeTopup($pdo, $accountId, $amountToNotify, $paymentMethod, null, $generatedPin);
         } elseif ($action === 'order_card') {
-            executeOrderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin);
+            // Betrag wird nun per Referenz aus der Funktion zurückgegeben
+            executeOrderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin, $amountToNotify);
         } elseif ($action === 'buy_abo') {
-            executeBuyAbo($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin);
+            executeBuyAbo($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin, $amountToNotify);
         } elseif ($action === 'block_card') {
             executeBlockCard($pdo, $accountId, $input);
         } elseif ($action === 'reorder_card') {
-            executeReorderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin);
+            executeReorderCard($pdo, $accountId, $currentBalance, $input, $paymentMethod, null, $generatedPin, $amountToNotify);
         }
         
         if ($generatedPin) {
@@ -468,7 +626,31 @@ if (in_array($action, ['topup', 'order_card', 'buy_abo', 'block_card', 'reorder_
         }
 
         $pdo->commit();
+
+        // NEU: E-Mail asynchron im Hintergrund versenden (nur bei bestell-relevanten Aktionen)
+        if ($action !== 'block_card') {
+            $stmtUser = $pdo->prepare("SELECT vorname, email FROM users WHERE id = ?");
+            $stmtUser->execute([$userId]);
+            $userData = $stmtUser->fetch();
+            
+            // Response an User senden und Verbindung trennen
+            sendJsonResponseAndContinueBackground($responseData);
+            
+            // Ab hier Hintergrund-Logik
+            if ($userData && !empty($userData['email'])) {
+                sendOrderConfirmationEmail(
+                    $userData['email'], 
+                    $userData['vorname'], 
+                    $action, 
+                    $amountToNotify, // Hinweis: Für genaue Beträge bei Abos/Karten müsste hier eine Preisberechnung erfolgen, falls gewünscht
+                    $paymentMethod, 
+                    $input, 
+                    $generatedPin
+                );
+            }
+        } else {
         echo json_encode($responseData);
+        }
     } catch (\PDOException $e) {
         if (isset($pdo) && $pdo->inTransaction()) { $pdo->rollBack(); }
         error_log("Database Error: " . $e->getMessage());
@@ -477,19 +659,6 @@ if (in_array($action, ['topup', 'order_card', 'buy_abo', 'block_card', 'reorder_
         if (isset($pdo) && $pdo->inTransaction()) { $pdo->rollBack(); }
         echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
     }
-    exit;
-}
-
-// ==========================================
-// PREISE ABRUFEN
-// ==========================================
-if ($action === 'get_prices') {
-    $stmt = $pdo->query("SELECT name, def_value FROM default_values WHERE name IN ('card_deposit', 'full_year_per_day', 'half_year_per_day')");
-    $prices = ['card_deposit' => 5.0, 'full_year_per_day' => 120.0, 'half_year_per_day' => 80.0];
-    while ($row = $stmt->fetch()) {
-        $prices[$row['name']] = (float)$row['def_value'];
-    }
-    echo json_encode(['status' => 'success', 'data' => $prices]);
     exit;
 }
 

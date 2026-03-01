@@ -54,38 +54,48 @@ const Modal = ({ isOpen, onClose, title, children }) => {
   );
 };
 
-// --- LEGAL TEXT COMPONENT (NEU) ---
-const LegalText = ({ type }) => (
+// --- LEGAL TEXT COMPONENT (DYNAMISCH) ---
+const LegalText = ({ type, htmlContent, isLoading }) => {
+  const title = type === 'impressum' ? 'Impressum' : 'Datenschutzerklärung';
+  
+  // Kleiner Fix: Falls "className" im DB-String steht (React Syntax), ersetzen wir es durch "class" (HTML Syntax)
+  const sanitizedContent = htmlContent ? htmlContent.replace(/className=/g, 'class=') : '';
+
+  return (
   <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm text-slate-700 space-y-4 text-left">
-    <h2 className="text-2xl font-bold mb-4 text-slate-800">{type === 'impressum' ? 'Impressum' : 'Datenschutzerklärung'}</h2>
-    {type === 'impressum' ? (
-       <div className="space-y-4 text-sm leading-relaxed">
-         <p><strong>Angaben gemäß § 5 TMG</strong></p>
-         <p>Mensaverein Ho'gau e.V.<br/>Schulstraße 1<br/>12345 Musterstadt</p>
-         <p><strong>Vertreten durch:</strong><br/>Max Mustermann (1. Vorsitzender)</p>
-         <p><strong>Kontakt:</strong><br/>E-Mail: info@mensaverein-hogau.de<br/>Telefon: +49 (0) 123 456789</p>
-         <p><strong>Registereintrag:</strong><br/>Eintragung im Vereinsregister.<br/>Registergericht: Amtsgericht Musterstadt<br/>Registernummer: VR 12345</p>
-       </div>
+      <h2 className="text-2xl font-bold mb-4 text-slate-800">{title}</h2>
+      {isLoading ? (
+        <div className="flex flex-col items-center justify-center py-12 gap-4">
+          <Loader2 className="animate-spin text-blue-600" size={40} />
+          <p className="text-sm text-slate-400 animate-pulse">Inhalte werden geladen...</p>
+        </div>
+      ) : sanitizedContent ? (
+        <div 
+          className="space-y-4 text-sm leading-relaxed prose prose-slate max-w-none"
+          dangerouslySetInnerHTML={{ __html: sanitizedContent }}
+        />
     ) : (
-       <div className="space-y-4 text-sm leading-relaxed">
-         <h3 className="text-lg font-bold text-slate-800">1. Datenschutz auf einen Blick</h3>
-         <p><strong>Allgemeine Hinweise</strong><br/>Die folgenden Hinweise geben einen einfachen Überblick darüber, was mit Ihren personenbezogenen Daten passiert, wenn Sie unsere Website besuchen. Personenbezogene Daten sind alle Daten, mit denen Sie persönlich identifiziert werden können.</p>
-         <h3 className="text-lg font-bold text-slate-800">2. Datenerfassung auf dieser Website</h3>
-         <p><strong>Wer ist verantwortlich für die Datenerfassung auf dieser Website?</strong><br/>Die Datenverarbeitung auf dieser Website erfolgt durch den Websitebetreiber. Die Kontaktdaten können Sie dem Impressum entnehmen.</p>
-         <p><strong>Wie erfassen wir Ihre Daten?</strong><br/>Ihre Daten werden zum einen dadurch erhoben, dass Sie uns diese mitteilen. Hierbei kann es sich z. B. um Daten handeln, die Sie in ein Registrierungsformular eingeben. Andere Daten werden automatisch beim Besuch der Website durch unsere IT-Systeme erfasst (z.B. IP-Adresse).</p>
-         <p><strong>Wofür nutzen wir Ihre Daten?</strong><br/>Ein Teil der Daten wird erhoben, um eine fehlerfreie Bereitstellung der Website zu gewährleisten. Andere Daten werden zur Verwaltung Ihrer Prepaid-Guthaben und Chipkarten verwendet.</p>
-       </div>
+        <div className="p-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+           <p className="text-slate-400 text-sm">Inhalt konnte nicht geladen werden.</p>
+        </div>
     )}
   </div>
 );
+};
 
 // --- DYNAMISCHE CHECKOUT KOMPONENTE (Paypal/Klarna/Manuell) ---
-const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManualSubmit, onSucceed, onProcessing, onFinished, isLoading, user }) => {
+const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManualSubmit, onSucceed, onProcessing, onFinished, isLoading, user, config }) => {
   const paypalRef = React.useRef(null);
   const [isScriptLoaded, setIsScriptLoaded] = React.useState(false);
+  const [isKlarnaLoaded, setIsKlarnaLoaded] = React.useState(false);
+  const [klarnaToken, setKlarnaToken] = React.useState(null);
+
+  // FIX: Wir machen einen String aus dem actionData Objekt, um Dauerschleifen in React-Hooks zu vermeiden, 
+  // da Inline-Objekte in React bei jedem Render als "neu" betrachtet werden.
+  const actionDataString = JSON.stringify(actionData);
 
   React.useEffect(() => {
-    if (paymentMethod !== 'paypal' && paymentMethod !== 'klarna') return;
+    if (paymentMethod !== 'paypal') return;
 
     const scriptId = 'paypal-sdk-script';
     let script = document.getElementById(scriptId);
@@ -97,21 +107,36 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
 
     script = document.createElement("script");
     script.id = scriptId;
-    script.src = `https://www.paypal.com/sdk/js?client-id=***REMOVED***&currency=EUR&intent=capture&components=buttons,funding-eligibility`;
+    script.src = `https://www.paypal.com/sdk/js?client-id=***REMOVED***&currency=EUR&intent=capture&components=buttons`;
     script.async = true;
     
     script.onload = () => setIsScriptLoaded(true);
     document.body.appendChild(script);
   }, [paymentMethod]);
 
+  // Klarna Native SDK Laden
   React.useEffect(() => {
-    if (isScriptLoaded && window.paypal && paypalRef.current && (paymentMethod === 'paypal' || paymentMethod === 'klarna')) {
+    if (paymentMethod !== 'klarna') return;
+    const scriptId = 'klarna-sdk-script';
+    if (!document.getElementById(scriptId)) {
+        const script = document.createElement("script");
+        script.id = scriptId;
+        script.src = `https://x.klarnacdn.net/kp/lib/v1/api.js`;
+        script.async = true;
+        script.onload = () => setIsKlarnaLoaded(true);
+        document.body.appendChild(script);
+    } else {
+        setIsKlarnaLoaded(true);
+    }
+  }, [paymentMethod]);
+
+  React.useEffect(() => {
+    if (isScriptLoaded && window.paypal && paypalRef.current && paymentMethod === 'paypal') {
       paypalRef.current.innerHTML = '';
       
       try {
         window.paypal.Buttons({
-          style: { layout: "vertical", shape: "rect", color: paymentMethod === 'klarna' ? 'white' : 'gold' },
-          fundingSource: paymentMethod === 'klarna' ? window.paypal.FUNDING.KLARNA : window.paypal.FUNDING.PAYPAL,
+          style: { layout: "vertical", shape: "rect", color: 'gold' },
           createOrder: () => {
             return fetch("/api/actions.php?action=create_paypal_order", {
               method: "POST",
@@ -119,7 +144,7 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
               body: JSON.stringify({ 
                 amount: amount, 
                 actionType: actionType, 
-                actionData: actionData 
+                actionData: JSON.parse(actionDataString) // Hier nutzen wir den String als Quelle
               }),
             })
             .then(res => res.json())
@@ -137,7 +162,7 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
             });
           },
           onApprove: (data, actions) => {
-            if (onProcessing) onProcessing(); // Button deaktivieren & Lade-Spinner zeigen
+            if (onProcessing) onProcessing(); 
             return fetch("/api/actions.php?action=capture_paypal_order", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -146,7 +171,6 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
             .then(res => res.json())
             .then(result => {
               if (result.status === 'success' || result.status === 'COMPLETED') {
-                // Bei Erfolg direkt die Ansicht aktualisieren
                 onSucceed();
               } else {
                 throw new Error(result.message || "Zahlung konnte nicht abgeschlossen werden.");
@@ -157,7 +181,7 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
               alert(error.message || "Sorry, die Zahlung konnte nicht verarbeitet werden.");
             })
             .finally(() => {
-              if (onFinished) onFinished(); // Lade-Spinner wieder aufheben
+              if (onFinished) onFinished(); 
             });
           },
           onError: (err) => {
@@ -169,9 +193,83 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
         console.error("PayPal Render Error:", err);
       }
     }
-  }, [isScriptLoaded, paymentMethod, amount, actionType, actionData, onProcessing, onSucceed, onFinished]);
+  // actionDataString als Dependency, anstatt das direkte Objekt
+  }, [isScriptLoaded, paymentMethod, amount, actionType, actionDataString]);
 
-  // Szenario 1: Alles über Guthaben abgedeckt
+  // 1. SCHRITT: Klarna Session anfordern
+  React.useEffect(() => {
+    if (isKlarnaLoaded && window.Klarna && paymentMethod === 'klarna') {
+        if (onProcessing) onProcessing();
+        setKlarnaToken(null); // Reset falls sich Parameter ändern
+        
+        fetch("/api/actions.php?action=create_klarna_session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount, actionType, actionData: JSON.parse(actionDataString) }),
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.client_token) {
+                setKlarnaToken(data.client_token);
+            } else {
+                throw new Error(data.message || "Klarna Initialisierung fehlgeschlagen.");
+            }
+        })
+        .catch(err => {
+            alert(err.message);
+        })
+        .finally(() => {
+            // FIX: Beendet den Lade-Spinner, damit der User auf den Bezahlen-Button klicken kann
+            if (onFinished) onFinished();
+        });
+    }
+  // actionDataString als sichere Dependency
+  }, [isKlarnaLoaded, paymentMethod, amount, actionType, actionDataString]);
+
+  // 2. SCHRITT: Klarna Widget erst laden, wenn React das Div in den DOM eingefügt hat
+  React.useEffect(() => {
+    if (klarnaToken && window.Klarna) {
+        // setTimeout gibt dem Browser Zeit für den Render-Zyklus, damit das Element garantiert existiert
+        setTimeout(() => {
+            const container = document.getElementById('klarna-payments-container');
+            if (container) {
+                window.Klarna.Payments.init({ client_token: klarnaToken });
+                window.Klarna.Payments.load({ container: '#klarna-payments-container' }, () => {
+                   // Optional callback
+                });
+            }
+        }, 100);
+    }
+  }, [klarnaToken]);
+
+  // Zahlung nach Nutzerinteraktion bei Klarna finalisieren
+  const handleKlarnaAuth = () => {
+    if (!window.Klarna) return;
+    if (onProcessing) onProcessing();
+    window.Klarna.Payments.authorize({}, (res) => {
+        if (res.approved && res.authorization_token) {
+            fetch("/api/actions.php?action=place_klarna_order", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ authorization_token: res.authorization_token })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    onSucceed();
+                } else {
+                    alert(data.message || "Fehler bei der Klarna-Zahlung.");
+                }
+            })
+            .catch(() => alert("Verbindungsfehler."))
+            .finally(() => { if (onFinished) onFinished(); });
+        } else {
+            if (onFinished) onFinished();
+            if (res.error) alert(res.error.message || "Klarna-Zahlung abgebrochen.");
+        }
+    });
+  };
+
   if (amount <= 0) {
     return (
       <button 
@@ -185,16 +283,15 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
     );
   }
 
-  // Szenario 2: Banküberweisung (Vorkasse)
   if (paymentMethod === 'ueberweisung') {
     return (
       <div className="space-y-4 animate-in fade-in duration-300">
         <div className="bg-blue-50 text-blue-900 p-5 rounded-xl text-sm border border-blue-200 shadow-inner">
           <p className="font-bold mb-3 flex items-center gap-2"><Landmark size={18}/> Bitte überweise den Betrag an:</p>
           <div className="space-y-2 font-mono">
-            <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
-                  <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
-                  <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+            <p className="flex justify-between"><span>Empfänger:</span> <strong>{config.schoolName}</strong></p>
+            <p className="flex justify-between"><span>IBAN:</span> <strong>{config.schoolIban}</strong></p>
+            <p className="flex justify-between"><span>BIC:</span> <strong>{config.schoolBic}</strong></p>
             <div className="mt-3 pt-3 border-t border-blue-200">
               <p className="text-xs text-blue-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (WICHTIG):</p>
               <p className="font-bold text-lg bg-white px-3 py-2 rounded border border-blue-100 text-center select-all shadow-sm">
@@ -216,15 +313,42 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
     );
   }
 
-  // Szenario 3: PayPal & Klarna via SDK
   return (
-    <div className="relative z-0 min-h-[150px] animate-in fade-in duration-300">
-      {!isScriptLoaded ? (
+        <div className="space-y-4 relative z-0 min-h-[150px] animate-in fade-in duration-300">
+          {paymentMethod === 'paypal' && !isScriptLoaded ? (
         <div className="flex justify-center items-center h-[150px]">
           <Loader2 className="animate-spin text-blue-600" size={32} />
         </div>
       ) : null}
+          
+          {paymentMethod === 'paypal' && (
       <div ref={paypalRef} className={!isScriptLoaded ? 'hidden' : 'block'}></div>
+          )}
+
+          {paymentMethod === 'klarna' && (
+            <div className="animate-in fade-in duration-300 w-full">
+              {!klarnaToken ? (
+                <div className="flex justify-center items-center h-[150px]">
+                  <Loader2 className="animate-spin text-[#ff8da1]" size={32} />
+                </div>
+              ) : (
+                <>
+                  {/* Container, in den Klarna automatisch seine Input-Felder rendert */}
+                  <div id="klarna-payments-container" className="mb-4 bg-white border border-slate-200 rounded-xl p-2 min-h-[100px]"></div>
+                  
+                  {/* Der offizielle Kauf-Button, der die Authorisierung anstößt */}
+                  <button 
+                      disabled={isLoading}
+                      onClick={handleKlarnaAuth}
+                      className="w-full py-4 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-all bg-[#ffb3c7] text-[#1c1c1c] hover:bg-[#ff8da1] shadow-sm disabled:opacity-50"
+                  >
+                      {isLoading ? <Loader2 className="animate-spin" size={20} /> : <ShoppingCart size={20} />}
+                      Jetzt mit Klarna bezahlen
+                  </button>
+                </>
+              )}
+            </div>
+          )}
     </div>
   );
 };
@@ -234,7 +358,6 @@ export default function App() {
   const [authMode, setAuthMode] = useState('login'); 
   const [activeTab, setActiveTab] = useState('dashboard');
   
-  // State für Ladeanimationen
   const [isLoading, setIsLoading] = useState(false);         
   const [isActionLoading, setIsActionLoading] = useState(false); 
   const [isAuthLoading, setIsAuthLoading] = useState(false);     
@@ -244,21 +367,26 @@ export default function App() {
   const [abos, setAbos] = useState([]);
   const [cards, setCards] = useState([]);
   
-  // Dynamische Preise aus der Datenbank
-  const [sysPrices, setSysPrices] = useState({ cardDeposit: 5, halfYear: 80, fullYear: 120 });
+  // Dynamische Preise und Einstellungen aus der Datenbank
+  const [sysPrices, setSysPrices] = useState({ 
+    cardDeposit: 5, 
+    halfYear: 80, 
+    fullYear: 120,
+    schoolName: 'Gymnasium Hohenschwangau',
+    schoolIban: 'DE12 3456 7890 1234 5678 90',
+    schoolBic: 'BYLADEM1ALG'
+  });
 
-  // Pagination-State für Transaktionen
+  // KORREKTUR: Schlüssel im State an activeTab Werte anpassen
+  const [legalContent, setLegalContent] = useState({ impressum: '', datenschutz: '' });
+  const [isLegalLoading, setIsLegalLoading] = useState(false);
+
   const [visibleTransactions, setVisibleTransactions] = useState(10);
-
-  // Auth States für Formulare
   const [authData, setAuthData] = useState({ firstName: '', lastName: '', email: '', password: '', passwordConfirm: '' });
   const [authError, setAuthError] = useState('');
   
-  // NEU: States für Passwort zurücksetzen nach PHP-Einfach
   const [resetToken, setResetToken] = useState('');
   const [resetSuccessMsg, setResetSuccessMsg] = useState('');
-
-  // UI State für abgelaufene Abos
   const [showExpiredAbos, setShowExpiredAbos] = useState(false);
 
   const handleLogout = () => {
@@ -289,6 +417,19 @@ export default function App() {
           setAbos(data.data.abos);
           setCards(data.data.cards);
           
+          // Konfiguration mappen
+          if (data.data.config) {
+            const c = data.data.config;
+            setSysPrices({
+              cardDeposit: parseFloat(c.card_deposit) || 5,
+              halfYear: parseFloat(c.half_year_per_day) || 80,
+              fullYear: parseFloat(c.full_year_per_day) || 120,
+              schoolName: c.school_name || 'Gymnasium Hohenschwangau',
+              schoolIban: c.school_iban || 'DE12 3456 7890 1234 5678 90',
+              schoolBic: c.school_bic || 'BYLADEM1ALG'
+            });
+          }
+          
           const mappedTransactions = data.data.transactions.map(tx => ({
             ...tx,
             icon: IconMap[tx.iconName] || Wallet 
@@ -315,23 +456,38 @@ export default function App() {
       });
   };
 
-  useEffect(() => {
-    fetchUserData(false);
-    
-    // Systempreise abrufen
-    fetch('/api/actions.php?action=get_prices')
+  // --- FUNKTIONEN ZUM LADEN DER RECHTSTEXTE (ON DEMAND) ---
+  const fetchImprint = () => {
+    if (legalContent.impressum) return; 
+    setIsLegalLoading(true);
+    fetch('/api/data.php?action=getLegalContent&type=imprint')
       .then(r => r.json())
       .then(data => {
-        if(data.status === 'success') {
-          setSysPrices({
-            cardDeposit: data.data.card_deposit || 5,
-            halfYear: data.data.half_year_per_day || 80,
-            fullYear: data.data.full_year_per_day || 120
-          });
+        if (data.status === 'success') {
+          setLegalContent(prev => ({ ...prev, impressum: data.content }));
         }
-      }).catch(err => console.error("Could not fetch prices", err));
+      })
+      .catch(err => console.error("Impressum Fehler", err))
+      .finally(() => setIsLegalLoading(false));
+  };
 
-    // NEU: Passwort zurücksetzen Token aus URL lesen (PHP-Einfach Logik)
+  const fetchPrivacy = () => {
+    if (legalContent.datenschutz) return; 
+    setIsLegalLoading(true);
+    fetch('/api/data.php?action=getLegalContent&type=privacy')
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'success') {
+          setLegalContent(prev => ({ ...prev, datenschutz: data.content }));
+        }
+      })
+      .catch(err => console.error("Datenschutz Fehler", err))
+      .finally(() => setIsLegalLoading(false));
+  };
+
+  useEffect(() => {
+    fetchUserData(false);
+
     const urlParams = new URLSearchParams(window.location.search);
     const token = urlParams.get('token');
     const passwortVergessen = urlParams.get('passwort_vergessen');
@@ -343,7 +499,12 @@ export default function App() {
     }
   }, []);
   
-  // Abo Shop State
+  // Effekt zum Triggern der Legal-Fetches
+  useEffect(() => {
+    if (activeTab === 'impressum' || authMode === 'impressum') fetchImprint();
+    if (activeTab === 'datenschutz' || authMode === 'datenschutz') fetchPrivacy();
+  }, [activeTab, authMode]);
+  
   const [aboStep, setAboStep] = useState(1);
   const [aboPayment, setAboPayment] = useState('paypal');
   const [shopData, setShopData] = useState({
@@ -355,12 +516,11 @@ export default function App() {
     useBalance: false
   });
   
-  // Modals state
   const [isTopUpOpen, setIsTopUpOpen] = useState(false);
   const [topUpStep, setTopUpStep] = useState('choose');
   const [topUpAmount, setTopUpAmount] = useState(20);
   const [topUpPayment, setTopUpPayment] = useState('paypal');
-  const [paymentPin, setPaymentPin] = useState(''); // Globaler PIN State für alle Überweisungen
+  const [paymentPin, setPaymentPin] = useState(''); 
 
   const [isOrderCardOpen, setIsOrderCardOpen] = useState(false);
   const [orderCardStep, setOrderCardStep] = useState('form');
@@ -410,12 +570,10 @@ export default function App() {
   const handleRegister = (e) => {
     e.preventDefault();
     setAuthError('');
-    
     if (authData.password !== authData.passwordConfirm) {
       setAuthError('Die Passwörter stimmen nicht überein.');
       return;
     }
-
     setIsAuthLoading(true);
     fetch('/api/data.php?action=register', {
       method: 'POST',
@@ -445,13 +603,11 @@ export default function App() {
     });
   };
 
-  // NEU: Handler für Passwort anfordern
   const handleForgotPassword = (e) => {
     e.preventDefault();
     setAuthError('');
     setResetSuccessMsg('');
     setIsAuthLoading(true);
-
     fetch('/api/data.php?action=forgot_password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -471,19 +627,15 @@ export default function App() {
     .finally(() => setIsAuthLoading(false));
   };
 
-  // NEU: Handler für neues Passwort setzen
   const handleResetPassword = (e) => {
     e.preventDefault();
     setAuthError('');
     setResetSuccessMsg('');
-    
     if (authData.password !== authData.passwordConfirm) {
       setAuthError('Die Passwörter stimmen nicht überein.');
       return;
     }
-
     setIsAuthLoading(true);
-
     fetch('/api/data.php?action=reset_password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -496,7 +648,7 @@ export default function App() {
         setAuthMode('login');
         setResetSuccessMsg('Passwort erfolgreich geändert. Du kannst dich nun einloggen.');
         setAuthData({...authData, password: '', passwordConfirm: ''});
-        window.history.pushState({}, document.title, window.location.pathname); // Token aus URL entfernen
+        window.history.pushState({}, document.title, window.location.pathname); 
       } else {
         setAuthError(data.message || 'Fehler beim Zurücksetzen des Passworts.');
       }
@@ -504,8 +656,6 @@ export default function App() {
     .catch(() => setAuthError('Netzwerkfehler. Bitte Server prüfen.'))
     .finally(() => setIsAuthLoading(false));
   };
-
-  // --- MANUELLE CHECKOUT CALLBACKS (Für Überweisung / Guthaben) ---
 
   const handleManualTopUp = (method) => {
     setIsActionLoading(true);
@@ -577,6 +727,34 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ holderId: lostCardData.card.holderId, cardId: lostCardData.card.id })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if(data.status === 'success') {
+        setLostCardStep('success-block');
+        fetchUserData(false);
+      } else {
+        showToast(data.message || 'Fehler beim Sperren der Karte.');
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Verbindungsfehler. Bitte versuche es erneut.');
+    })
+    .finally(() => setIsActionLoading(false));
+  };
+
+  const handleManualReorderCard = (method) => {
+    setIsActionLoading(true);
+    fetch('/api/actions.php?action=reorder_card', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        holderId: lostCardData.card.holderId,
+        useBalance: lostCardData.useBalance,
+        paymentMethod: method
+      })
     })
     .then(r => r.json())
     .then(data => {
@@ -686,7 +864,6 @@ export default function App() {
     return daysCost + cardCost;
   };
 
-
   const renderAboCard = (abo) => (
     <div key={abo.id} className={`bg-white rounded-3xl border ${abo.isActive ? 'border-green-200 ring-1 ring-green-100' : 'border-slate-200'} shadow-sm overflow-hidden relative`}>
       <div className={`px-6 py-3 border-b flex justify-between items-center ${abo.isActive ? 'bg-green-50 border-green-100' : 'bg-slate-50 border-slate-100'}`}>
@@ -696,7 +873,6 @@ export default function App() {
           {abo.isActive ? 'Aktiv' : 'Abgelaufen'}
         </span>
       </div>
-      
       <div className="p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
@@ -707,7 +883,6 @@ export default function App() {
             <p className="font-bold text-slate-800 text-lg">{abo.student}</p>
           </div>
         </div>
-
         <div className="space-y-4">
           <div>
             <p className="text-xs text-slate-500 mb-2">Gültige Wochentage</p>
@@ -719,7 +894,6 @@ export default function App() {
               ))}
             </div>
           </div>
-          
           <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
             <div className="flex justify-between items-center">
               <span className="text-sm text-slate-500">Bisher genutzt:</span>
@@ -732,10 +906,8 @@ export default function App() {
               <span className={`font-semibold ${abo.isActive ? 'text-slate-800' : 'text-red-600'}`}>{abo.validUntil}</span>
             </div>
           </div>
-
         </div>
       </div>
-      
       {!abo.isActive && (
         <div className="p-4 bg-slate-50 border-t border-slate-100">
            <button onClick={() => showToast("Abo wird verlängert...")} className="w-full py-2 bg-white border border-slate-200 text-slate-700 font-semibold rounded-lg hover:bg-slate-100 transition-colors">
@@ -771,15 +943,12 @@ export default function App() {
             }
           `}
         </style>
-        
         <div className="liquid-container relative w-48 h-48 flex items-center justify-center">
           <div className="liquid-shape absolute inset-0"></div>
           <div className="liquid-shape absolute inset-0 opacity-40 mix-blend-overlay" style={{ animationDirection: 'reverse', animationDuration: '6s' }}></div>
           <div className="liquid-shape absolute inset-4 opacity-60 bg-blue-100" style={{ animationDuration: '3s' }}></div>
-          
           <Utensils size={56} className="text-blue-600 relative z-10 animate-pulse drop-shadow-md" />
         </div>
-        
         <h2 className="text-white text-xl font-bold mt-12 animate-pulse tracking-[0.2em] relative z-10">DATEN WERDEN GELADEN</h2>
       </div>
     );
@@ -795,7 +964,7 @@ export default function App() {
              <button onClick={() => setAuthMode('login')} className="flex items-center gap-2 text-slate-500 font-bold text-sm mb-4 hover:text-slate-800 transition-colors">
                <ChevronLeft size={16} /> Zurück zum Login
              </button>
-             <LegalText type={authMode} />
+             <LegalText type={authMode} htmlContent={legalContent[authMode]} isLoading={isLegalLoading} />
            </div>
         ) : (
         <>
@@ -807,7 +976,6 @@ export default function App() {
               <h1 className="text-2xl font-bold text-white">MensaPay</h1>
               <p className="text-blue-100 mt-1">Das Ho'gauer Schulverpflegungs-Portal</p>
             </div>
-            
             <div className="p-8">
               <h2 className="text-xl font-bold text-slate-800 mb-6">
                 {authMode === 'login' && 'Willkommen zurück!'}
@@ -815,19 +983,16 @@ export default function App() {
                 {authMode === 'forgot_password' && 'Passwort zurücksetzen'}
                 {authMode === 'reset_password' && 'Neues Passwort vergeben'}
               </h2>
-              
               {authError && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-sm font-medium flex items-center gap-2">
                   <AlertCircle size={16} /> {authError}
                 </div>
               )}
-
               {resetSuccessMsg && (
                 <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-xl text-sm font-medium flex items-center gap-2">
                   <CheckCircle2 size={16} /> {resetSuccessMsg}
                 </div>
               )}
-              
               <form 
                 onSubmit={
                   authMode === 'login' ? handleLogin : 
@@ -849,28 +1014,24 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                
                 {(authMode === 'login' || authMode === 'register' || authMode === 'forgot_password') && (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">E-Mail Adresse</label>
                     <input required type="email" value={authData.email} onChange={e => setAuthData({...authData, email: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="mail@beispiel.de" />
                   </div>
                 )}
-                
                 {(authMode === 'login' || authMode === 'register' || authMode === 'reset_password') && (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">{authMode === 'reset_password' ? 'Neues Passwort' : 'Passwort'}</label>
                     <input required type="password" value={authData.password} onChange={e => setAuthData({...authData, password: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
                   </div>
                 )}
-
                 {(authMode === 'register' || authMode === 'reset_password') && (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Passwort wiederholen</label>
                     <input required type="password" value={authData.passwordConfirm} onChange={e => setAuthData({...authData, passwordConfirm: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
                   </div>
                 )}
-                
                 <button 
                   type="submit" 
                   disabled={isAuthLoading}
@@ -889,7 +1050,6 @@ export default function App() {
                   )}
                 </button>
               </form>
-              
               <div className="mt-6 text-center space-y-3">
                 {(authMode === 'login' || authMode === 'register' || authMode === 'forgot_password') && (
                   <button 
@@ -905,7 +1065,6 @@ export default function App() {
                     {authMode === 'login' ? 'Noch kein Account? Hier registrieren.' : 'Bereits registriert? Hier einloggen.'}
                   </button>
                 )}
-
                 {authMode === 'login' && (
                   <button 
                     type="button" 
@@ -918,7 +1077,6 @@ export default function App() {
               </div>
             </div>
           </div>
-          
           <div className="mt-8 text-center text-sm text-slate-500 flex justify-center gap-6">
             <button onClick={() => setAuthMode('impressum')} className="hover:text-blue-600 transition-colors">Impressum</button>
             <button onClick={() => setAuthMode('datenschutz')} className="hover:text-blue-600 transition-colors">Datenschutz</button>
@@ -929,7 +1087,6 @@ export default function App() {
     );
   }
 
-  // --- Main App Wrapper (PayPal Context) ---
   return (
       <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20 md:pb-0 flex flex-col">
         <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
@@ -938,7 +1095,6 @@ export default function App() {
               <Utensils size={24} className="stroke-[2.5]" />
               <span className="text-xl font-bold tracking-tight">MensaPay</span>
             </div>
-            
             <nav className="hidden md:flex gap-1">
               <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
                 <Wallet size={18} /> Übersicht
@@ -950,7 +1106,6 @@ export default function App() {
                 <CreditCard size={18} /> Karten
               </button>
             </nav>
-
             <div className="flex items-center gap-4">
               <div className="hidden md:flex flex-col items-end">
                 <span className="text-sm font-semibold">{user.firstName} {user.lastName}</span>
@@ -969,7 +1124,6 @@ export default function App() {
           {activeTab === 'dashboard' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <h2 className="text-2xl font-bold text-slate-800">Kontoübersicht</h2>
-              
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="md:col-span-2 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-8 text-white shadow-xl shadow-blue-900/10 relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-8 opacity-10">
@@ -986,7 +1140,6 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-
                 <div className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm flex flex-col justify-center">
                   <h4 className="font-semibold text-slate-700 mb-4 flex items-center gap-2">
                     <ShieldCheck size={20} className="text-green-500"/> Kontostatus
@@ -1007,7 +1160,6 @@ export default function App() {
                   </ul>
                 </div>
               </div>
-
               <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden mt-8">
                 <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
@@ -1035,7 +1187,6 @@ export default function App() {
                           </div>
                         </div>
                       ))}
-                      
                       {visibleTransactions < transactions.length && (
                         <div className="p-4 bg-slate-50 flex justify-center border-t border-slate-100">
                           <button 
@@ -1053,7 +1204,6 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB: ABOS */}
           {activeTab === 'abos' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <div className="flex justify-between items-end">
@@ -1065,7 +1215,6 @@ export default function App() {
                   <Plus size={20} /> Neues Abo kaufen
                 </button>
               </div>
-
               {abos.filter(a => a.isActive).length === 0 ? (
                 <div className="p-8 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
                   <p className="text-slate-500">Keine aktiven Abos vorhanden.</p>
@@ -1075,7 +1224,6 @@ export default function App() {
                   {abos.filter(a => a.isActive).map(renderAboCard)}
                 </div>
               )}
-
               {abos.filter(a => !a.isActive).length > 0 && (
                 <div className="mt-8 pt-6 border-t border-slate-200">
                   <button 
@@ -1085,7 +1233,6 @@ export default function App() {
                     {showExpiredAbos ? <ChevronLeft size={20} className="-rotate-90" /> : <ChevronRight size={20} className="rotate-90" />}
                     {showExpiredAbos ? 'Abgelaufene Abos ausblenden' : `Abgelaufene Abos anzeigen (${abos.filter(a => !a.isActive).length})`}
                   </button>
-                  
                   {showExpiredAbos && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6 opacity-80 animate-in fade-in slide-in-from-top-4 duration-300">
                       {abos.filter(a => !a.isActive).map(renderAboCard)}
@@ -1093,7 +1240,6 @@ export default function App() {
                   )}
                 </div>
               )}
-
               <button onClick={openAboShop} className="w-full sm:hidden bg-blue-600 text-white px-5 py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm">
                 <Plus size={20} /> Neues Abo kaufen
               </button>
@@ -1112,7 +1258,6 @@ export default function App() {
                   <CreditCard size={20} /> Prepaid-Karte bestellen
                 </button>
               </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {cards.map((card, index) => (
                   <div key={card.holderId || index} className={`bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden ${card.id === 'Wartend...' ? 'opacity-70' : card.status === 'Gesperrt' ? 'opacity-60 grayscale' : ''}`}>
@@ -1124,7 +1269,6 @@ export default function App() {
                       <div className="absolute -top-10 right-6 w-16 h-16 bg-white rounded-full p-1 shadow-sm border border-slate-100">
                         <img src={card.img} alt={card.student} className="w-full h-full rounded-full bg-slate-100" />
                       </div>
-                      
                       <h3 className="font-bold text-slate-800 text-lg mb-1 mt-2">{card.student}</h3>
                       <div className="flex items-center gap-2 mb-4">
                         <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md ${card.id === 'Wartend...' ? 'text-amber-600 bg-amber-50' : card.status === 'Gesperrt' ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'}`}>
@@ -1138,7 +1282,6 @@ export default function App() {
                           <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-2 py-1 rounded-md">Abo verknüpft</span>
                         )}
                       </div>
-
                       <div className="pt-4 border-t border-slate-100 flex gap-2">
                         {card.id !== 'Wartend...' ? (
                           <>
@@ -1156,7 +1299,6 @@ export default function App() {
                     </div>
                   </div>
                 ))}
-                
                 <div className="bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center p-8 text-center min-h-[250px]">
                   <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-blue-500 shadow-sm mb-4">
                     <Plus size={32} />
@@ -1184,7 +1326,6 @@ export default function App() {
                   <p className="text-slate-500 mt-1">Schritt {aboStep} von 4</p>
                 </div>
               </div>
-
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 sm:p-8">
                 
                 {/* Step 1: Abo Typ */}
@@ -1200,7 +1341,6 @@ export default function App() {
                         <p className="text-sm text-slate-500 mt-2 mb-4">Gültig für 1 Schulhalbjahr. Ideal zum Ausprobieren.</p>
                         <p className="font-semibold text-blue-600">{sysPrices.halfYear.toFixed(2).replace('.', ',')} € pro Wochentag</p>
                       </button>
-                      
                       <button 
                         onClick={() => setShopData({...shopData, type: 'ganz'})}
                         className={`p-6 rounded-2xl border-2 text-left transition-all ${shopData.type === 'ganz' ? 'border-blue-500 bg-blue-50 ring-4 ring-blue-500/10' : 'border-slate-200 hover:border-blue-300'}`}
@@ -1210,7 +1350,6 @@ export default function App() {
                         <p className="font-semibold text-blue-600">{sysPrices.fullYear.toFixed(2).replace('.', ',')} € pro Wochentag</p>
                       </button>
                     </div>
-                    
                     <div className="mt-8 flex justify-end">
                       <button 
                         disabled={!shopData.type}
@@ -1249,7 +1388,6 @@ export default function App() {
                         );
                       })}
                     </div>
-
                     <div className="mt-8 flex justify-between items-center border-t border-slate-100 pt-6">
                       <button onClick={() => setAboStep(1)} className="text-slate-500 font-semibold px-4 py-2 hover:bg-slate-100 rounded-lg transition-colors">Zurück</button>
                       <button 
@@ -1267,14 +1405,12 @@ export default function App() {
                 {aboStep === 3 && (
                   <div className="space-y-6 animate-in fade-in duration-300">
                     <h3 className="text-xl font-bold text-slate-800 mb-4">3. Schüler Profil</h3>
-                    
                     <div className="space-y-4">
                       <label className={`block p-4 border-2 rounded-xl cursor-pointer transition-all ${shopData.cardOption === 'existing' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
                         <div className="flex items-center gap-3">
                           <input type="radio" checked={shopData.cardOption === 'existing'} onChange={() => setShopData({...shopData, cardOption: 'existing'})} className="w-5 h-5 text-blue-600" />
                           <span className="font-bold text-slate-800">Bestehendes Profil nutzen</span>
                         </div>
-                        
                         {shopData.cardOption === 'existing' && (
                           <div className="mt-4 pl-8">
                             {cards.length > 0 ? (
@@ -1293,7 +1429,6 @@ export default function App() {
                           </div>
                         )}
                       </label>
-
                       <label className={`block p-4 border-2 rounded-xl cursor-pointer transition-all ${shopData.cardOption === 'new' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
                         <div className="flex items-center gap-3">
                           <input type="radio" checked={shopData.cardOption === 'new'} onChange={() => setShopData({...shopData, cardOption: 'new'})} className="w-5 h-5 text-blue-600" />
@@ -1302,7 +1437,6 @@ export default function App() {
                             <span className="text-xs text-slate-500">+ {sysPrices.cardDeposit.toFixed(2).replace('.', ',')} € Kartenpfand</span>
                           </div>
                         </div>
-                        
                         {shopData.cardOption === 'new' && (
                           <div className="mt-4 pl-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
@@ -1317,7 +1451,7 @@ export default function App() {
                               <label className="text-xs font-semibold text-slate-600 mb-1 block">Klasse</label>
                               <select value={shopData.newStudent.class} onChange={e => setShopData({...shopData, newStudent: {...shopData.newStudent, class: e.target.value}})} className="w-full p-2.5 rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500 bg-white">
                                 <option value="">Bitte wählen...</option>
-                                {['5a','5b','5c','6a','6b','6c','7a','7b','8a','8b','9a','10a','11','12'].map(cls => (
+                                {['5a','5b','5c','5d','6a','6b','6c','6d','7a','7b','7c','7d','8a','8b','8c','8d','9a','9b','9c','9d','10a','10b','10c','10d','11a','11b','11c','11d','Q12','Q13'].map(cls => (
                                   <option key={cls} value={cls}>Klasse {cls}</option>
                                 ))}
                               </select>
@@ -1326,7 +1460,6 @@ export default function App() {
                         )}
                       </label>
                     </div>
-
                     <div className="mt-8 flex justify-between items-center border-t border-slate-100 pt-6">
                       <button onClick={() => setAboStep(2)} className="text-slate-500 font-semibold px-4 py-2 hover:bg-slate-100 rounded-lg transition-colors">Zurück</button>
                       <button 
@@ -1344,7 +1477,6 @@ export default function App() {
                 {aboStep === 4 && (
                   <div className="space-y-6 animate-in fade-in duration-300">
                     <h3 className="text-xl font-bold text-slate-800 mb-4">4. Zusammenfassung & Zahlung</h3>
-                    
                     <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
                       <div className="flex justify-between items-center mb-4 pb-4 border-b border-slate-200">
                         <div>
@@ -1353,7 +1485,6 @@ export default function App() {
                         </div>
                         <span className="font-semibold">{(shopData.days.length * (shopData.type === 'halb' ? sysPrices.halfYear : sysPrices.fullYear)).toFixed(2).replace('.', ',')} €</span>
                       </div>
-
                       {shopData.cardOption === 'new' && (
                         <div className="flex justify-between items-center mb-4 pb-4 border-b border-slate-200">
                           <div>
@@ -1363,12 +1494,10 @@ export default function App() {
                           <span className="font-semibold">{sysPrices.cardDeposit.toFixed(2).replace('.', ',')} €</span>
                         </div>
                       )}
-
                       <div className="flex justify-between items-center text-lg mt-2">
                         <p className="font-bold text-slate-800">Gesamtbetrag</p>
                         <span className="font-bold text-slate-800">{calculateAboPrice().toFixed(2).replace('.', ',')} €</span>
                       </div>
-
                       {user.balance > 0 && (
                         <div className="mt-4 pt-4 border-t border-slate-200">
                           <label className="flex items-center gap-3 cursor-pointer">
@@ -1385,7 +1514,6 @@ export default function App() {
                           </label>
                         </div>
                       )}
-                      
                       {shopData.useBalance && user.balance > 0 && (
                         <div className="flex justify-between items-center text-lg mt-4 pt-4 border-t border-slate-200">
                           <p className="font-bold text-slate-800">Noch zu zahlen</p>
@@ -1395,7 +1523,6 @@ export default function App() {
                         </div>
                       )}
                     </div>
-
                     {Math.max(0, calculateAboPrice() - (shopData.useBalance ? user.balance : 0)) > 0 && (
                       <div className="mb-6">
                         <p className="font-semibold text-slate-800 text-sm mb-2">Zahlungsmethode wählen</p>
@@ -1414,7 +1541,6 @@ export default function App() {
                         </div>
                       </div>
                     )}
-
                     <div className="space-y-3">
                       <CheckoutAction 
                         amount={Math.max(0, calculateAboPrice() - (shopData.useBalance ? user.balance : 0))}
@@ -1443,9 +1569,9 @@ export default function App() {
                         onFinished={() => setIsActionLoading(false)}
                         isLoading={isActionLoading}
                         user={user}
+                        config={sysPrices}
                       />
                     </div>
-
                     <div className="mt-8 pt-6 border-t border-slate-100">
                       <button onClick={() => setAboStep(3)} className="text-slate-500 font-semibold px-4 py-2 hover:bg-slate-100 rounded-lg transition-colors">Zurück</button>
                     </div>
@@ -1459,14 +1585,13 @@ export default function App() {
                       <CheckCircle2 size={40} />
                     </div>
                     <h3 className="text-2xl font-bold text-slate-800">Abo erfolgreich gebucht!</h3>
-                    
                     {aboPayment === 'ueberweisung' && paymentPin && (
                       <div className="bg-amber-50 text-amber-900 p-5 rounded-xl text-sm border border-amber-200 text-left mb-6">
                         <p className="font-bold mb-3">Zahlung ausstehend. Bitte überweise den fälligen Betrag an:</p>
                         <div className="space-y-2 font-mono">
-                          <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
-                          <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
-                          <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                          <p className="flex justify-between"><span>Empfänger:</span> <strong>{sysPrices.schoolName}</strong></p>
+                          <p className="flex justify-between"><span>IBAN:</span> <strong>{sysPrices.schoolIban}</strong></p>
+                          <p className="flex justify-between"><span>BIC:</span> <strong>{sysPrices.schoolBic}</strong></p>
                         </div>
                         <div className="mt-4 pt-4 border-t border-amber-200">
                           <p className="text-xs text-amber-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
@@ -1476,7 +1601,6 @@ export default function App() {
                         </div>
                       </div>
                     )}
-
                     {shopData.cardOption === 'new' && (
                       <div className="bg-blue-50 text-blue-800 p-5 rounded-xl text-left border border-blue-100 text-sm mt-4">
                         <p className="mb-3">Das neue Schülerprofil und das Abo wurden erfolgreich im System registriert.</p>
@@ -1494,7 +1618,6 @@ export default function App() {
                     </button>
                   </div>
                 )}
-
               </div>
             </div>
           )}
@@ -1502,10 +1625,9 @@ export default function App() {
           {/* TAB: LEGAL (Impressum & Datenschutz im eingeloggten Bereich) */}
           {(activeTab === 'impressum' || activeTab === 'datenschutz') && (
             <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <LegalText type={activeTab} />
+              <LegalText type={activeTab} htmlContent={legalContent[activeTab]} isLoading={isLegalLoading} />
             </div>
           )}
-
         </main>
 
         <footer className="w-full max-w-5xl mx-auto p-4 text-center text-sm text-slate-500 hidden md:block">
@@ -1553,7 +1675,6 @@ export default function App() {
                 </div>
                 <ChevronRight className="text-slate-400 group-hover:text-blue-600" />
               </button>
-
               <button onClick={() => setTopUpStep('bar')} className="w-full flex items-center justify-between p-4 border border-slate-200 rounded-xl hover:border-green-500 hover:bg-green-50 transition-all group">
                 <div className="flex items-center gap-3">
                   <div className="bg-green-100 p-2 rounded-lg text-green-600 group-hover:bg-green-200"><Banknote size={24} /></div>
@@ -1566,7 +1687,6 @@ export default function App() {
               </button>
             </div>
           )}
-
           {topUpStep === 'online' && (
             <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
               <button onClick={() => setTopUpStep('choose')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-2">
@@ -1595,13 +1715,11 @@ export default function App() {
               </button>
             </div>
           )}
-
           {topUpStep === 'checkout' && (
             <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
               <button onClick={() => setTopUpStep('online')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-4">
                 <ChevronLeft size={16}/> Zurück
               </button>
-              
               <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
                 <div className="flex justify-between items-center text-lg">
                   <p className="font-bold text-slate-800">Aufladebetrag</p>
@@ -1623,7 +1741,6 @@ export default function App() {
                   </label>
                 ))}
               </div>
-
               <CheckoutAction 
                 amount={Number(topUpAmount)}
                 paymentMethod={topUpPayment}
@@ -1639,10 +1756,10 @@ export default function App() {
                 onFinished={() => setIsActionLoading(false)}
                 isLoading={isActionLoading}
                 user={user}
+                config={sysPrices}
               />
             </div>
           )}
-
           {topUpStep === 'bar' && (
             <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
               <button onClick={() => setTopUpStep('choose')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-2">
@@ -1663,7 +1780,6 @@ export default function App() {
               </button>
             </div>
           )}
-
           {topUpStep === 'success-ueberweisung' && (
             <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
               <div className="w-20 h-20 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
@@ -1673,9 +1789,9 @@ export default function App() {
               <div className="bg-blue-50 text-blue-900 p-5 rounded-xl text-sm border border-blue-200 text-left">
                 <p className="font-bold mb-3">Bitte überweise den Betrag ({Number(topUpAmount).toFixed(2).replace('.', ',')} €) an:</p>
                 <div className="space-y-2 font-mono">
-                  <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
-                  <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
-                  <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                  <p className="flex justify-between"><span>Empfänger:</span> <strong>{sysPrices.schoolName}</strong></p>
+                  <p className="flex justify-between"><span>IBAN:</span> <strong>{sysPrices.schoolIban}</strong></p>
+                  <p className="flex justify-between"><span>BIC:</span> <strong>{sysPrices.schoolBic}</strong></p>
                 </div>
                 <div className="mt-4 pt-4 border-t border-blue-200">
                   <p className="text-xs text-blue-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
@@ -1714,7 +1830,7 @@ export default function App() {
                   <label className="text-xs font-semibold text-slate-600 mb-1 block">Klasse</label>
                   <select value={newCardData.class} onChange={e => setNewCardData({...newCardData, class: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500 bg-white">
                     <option value="">Bitte wählen...</option>
-                    {['5a','5b','5c','6a','6b','6c','7a','7b','8a','8b','9a','10a','11','12'].map(cls => (
+                    {['5a','5b','5c','5d','6a','6b','6c','6d','7a','7b','7c','7d','8a','8b','8c','8d','9a','9b','9c','9d','10a','10b','10c','10d','11a','11b','11c','11d','Q12','Q13'].map(cls => (
                       <option key={cls} value={cls}>Klasse {cls}</option>
                     ))}
                   </select>
@@ -1745,13 +1861,11 @@ export default function App() {
               </button>
             </div>
           )}
-
           {orderCardStep === 'checkout' && (
             <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
               <button onClick={() => setOrderCardStep('form')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-4">
                 <ChevronLeft size={16}/> Zurück
               </button>
-
               <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
                 <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-200">
                   <div>
@@ -1817,6 +1931,7 @@ export default function App() {
                 onFinished={() => setIsActionLoading(false)}
                 isLoading={isActionLoading}
                 user={user}
+                config={sysPrices}
               />
             </div>
           )}
@@ -1833,9 +1948,9 @@ export default function App() {
                 <div className="bg-amber-50 text-amber-900 p-5 rounded-xl text-sm border border-amber-200 text-left mb-6">
                   <p className="font-bold mb-3">Zahlung ausstehend. Bitte überweise den fälligen Betrag an:</p>
                   <div className="space-y-2 font-mono">
-                    <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
-                    <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
-                    <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                    <p className="flex justify-between"><span>Empfänger:</span> <strong>{sysPrices.schoolName}</strong></p>
+                          <p className="flex justify-between"><span>IBAN:</span> <strong>{sysPrices.schoolIban}</strong></p>
+                          <p className="flex justify-between"><span>BIC:</span> <strong>{sysPrices.schoolBic}</strong></p>
                   </div>
                   <div className="mt-4 pt-4 border-t border-amber-200">
                     <p className="text-xs text-amber-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>
@@ -1878,14 +1993,12 @@ export default function App() {
               </button>
             </div>
           )}
-
           {lostCardStep === 'confirm-block' && (
             <div className="space-y-4 animate-in fade-in duration-300">
               <div className="bg-amber-50 text-amber-800 p-5 rounded-xl border border-amber-200">
                 <h4 className="font-bold mb-2 flex items-center gap-2"><AlertCircle size={20}/> Karte sperren</h4>
                 <p className="text-sm">Bist du sicher, dass du die Karte von <strong>{lostCardData.card?.student}</strong> sperren möchtest? Sie kann danach nicht mehr für Zahlungen am Terminal genutzt werden.</p>
               </div>
-              
               <div className="flex gap-3 mt-6">
                 <button 
                   onClick={() => setIsLostCardOpen(false)}
@@ -1903,13 +2016,11 @@ export default function App() {
               </div>
             </div>
           )}
-
           {lostCardStep === 'reorder-checkout' && (
             <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
               <button onClick={() => setLostCardStep('choose')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-800 mb-4">
                 <ChevronLeft size={16}/> Zurück
               </button>
-
               <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 mb-6">
                 <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-200">
                   <div>
@@ -1981,10 +2092,10 @@ export default function App() {
                 onFinished={() => setIsActionLoading(false)}
                 isLoading={isActionLoading}
                 user={user}
+                config={sysPrices}
               />
             </div>
           )}
-
           {lostCardStep === 'success-block' && (
             <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
               <div className="w-20 h-20 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
@@ -2000,7 +2111,6 @@ export default function App() {
               </button>
             </div>
           )}
-
           {lostCardStep === 'success-reorder' && (
             <div className="text-center space-y-4 py-4 animate-in fade-in duration-300">
               <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
@@ -2012,9 +2122,9 @@ export default function App() {
                 <div className="bg-amber-50 text-amber-900 p-5 rounded-xl text-sm border border-amber-200 text-left mb-6">
                   <p className="font-bold mb-3">Zahlung ausstehend. Bitte überweise den fälligen Betrag an:</p>
                   <div className="space-y-2 font-mono">
-                    <p className="flex justify-between"><span>Empfänger:</span> <strong>Gymnasium Hohenschwangau</strong></p>
-                    <p className="flex justify-between"><span>IBAN:</span> <strong>DE12 3456 7890 1234 5678 90</strong></p>
-                    <p className="flex justify-between"><span>BIC:</span> <strong>BYLADEM1ALG</strong></p>
+                    <p className="flex justify-between"><span>Empfänger:</span> <strong>{sysPrices.schoolName}</strong></p>
+                          <p className="flex justify-between"><span>IBAN:</span> <strong>{sysPrices.schoolIban}</strong></p>
+                          <p className="flex justify-between"><span>BIC:</span> <strong>{sysPrices.schoolBic}</strong></p>
                   </div>
                   <div className="mt-4 pt-4 border-t border-amber-200">
                     <p className="text-xs text-amber-700 uppercase tracking-wider font-sans font-bold mb-1">Verwendungszweck (SEHR WICHTIG):</p>

@@ -83,9 +83,24 @@ try {
             'half_year_per_day' => '0.00',
             'single_entry' => '0.00',
             'single_entry_reuse' => '0.00',
-            'card_deposit' => '0.00'
+            'card_deposit' => '0.00',
+            'school_name' => '',
+            'school_iban' => '',
+            'school_bic' => '',
+            'imprint' => '',
+            'privacy' => ''
         ];
-        $stmt = $pdo->query("SELECT name, def_value FROM default_values WHERE name IN ('full_year_per_day', 'half_year_per_day', 'single_entry', 'single_entry_reuse', 'card_deposit')");
+        
+        $fields = [
+            'full_year_per_day', 'half_year_per_day', 'single_entry', 
+            'single_entry_reuse', 'card_deposit', 'school_name', 
+            'school_iban', 'school_bic', 'imprint', 'privacy'
+        ];
+        $placeholders = implode(',', array_fill(0, count($fields), '?'));
+        
+        $stmt = $pdo->prepare("SELECT name, def_value FROM default_values WHERE name IN ($placeholders)");
+        $stmt->execute($fields);
+        
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             $response['defaultValues'][$row['name']] = $row['def_value'];
         }

@@ -124,6 +124,30 @@ if ($action === 'logout') {
     exit;
 }
 
+if ($action === 'getLegalContent') {
+    $type = $_GET['type'] ?? '';
+    $dbKey = '';
+    
+    if ($type === 'imprint') {
+        $dbKey = 'imprint';
+    } elseif ($type === 'privacy') {
+        $dbKey = 'privacy';
+    } else {
+        echo json_encode(['status' => 'error', 'message' => 'Ungültiger Typ angefordert.']);
+        exit;
+    }
+
+    $stmt = $pdo->prepare("SELECT def_value FROM default_values WHERE name = ?");
+    $stmt->execute([$dbKey]);
+    $res = $stmt->fetch();
+
+    echo json_encode([
+        'status' => 'success',
+        'content' => $res ? $res['def_value'] : 'Inhalt wurde noch nicht hinterlegt.'
+    ]);
+    exit;
+}
+
 // ==========================================
 // 4. ACTION: GET DATA (Dashboard Daten laden)
 // ==========================================
@@ -163,9 +187,26 @@ if ($action === 'getData') {
             ],
             'transactions' => [],
             'abos'         => [],
-            'cards'        => []
+            'cards'        => [],
+            'config'       => []
         ]
     ];
+
+    // --- System-Konfiguration (default_values) laden ---
+    $stmtConf = $pdo->query("SELECT name, def_value FROM default_values WHERE name IN ('card_deposit', 'full_year_per_day', 'half_year_per_day', 'imprint', 'privacy', 'school_name', 'school_bic', 'school_iban')");
+    $configData = [];
+    while ($row = $stmtConf->fetch()) {
+        $name = $row['name'];
+        $val = $row['def_value'];
+        
+        // Numerische Werte konvertieren, Texte lassen
+        if (in_array($name, ['card_deposit', 'full_year_per_day', 'half_year_per_day'])) {
+            $configData[$name] = (float)$val;
+        } else {
+            $configData[$name] = $val;
+        }
+    }
+    $response['data']['config'] = $configData;
 
     if ($accountId) {
         // Transaktionen (SUBSCRIPTION_USAGE herausfiltern)

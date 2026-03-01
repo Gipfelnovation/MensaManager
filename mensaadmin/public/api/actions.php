@@ -231,18 +231,34 @@ try {
             break;
 
         case 'updateSettings':
+            // Verarbeitet alle gesendeten Schlüssel-Wert-Paare (Preise, Bankdaten oder Rechtliches)
             $pdo->beginTransaction();
-            $stmt = $pdo->prepare("UPDATE default_values SET def_value = ? WHERE name = ?");
-            $allowedKeys = ['full_year_per_day', 'half_year_per_day', 'single_entry', 'single_entry_reuse', 'card_deposit'];
-            
-            foreach ($data as $key => $value) {
-                if (in_array($key, $allowedKeys)) {
-                    $stmt->execute([$value, $key]);
+            try {
+                $stmt = $pdo->prepare("INSERT INTO default_values (name, def_value) VALUES (:name, :val) ON DUPLICATE KEY UPDATE def_value = :val2");
+                
+                foreach ($data as $key => $value) {
+                    // Sicherheit: Nur erlaubte Keys verarbeiten (optional, aber empfohlen)
+                    $allowedKeys = [
+                        'full_year_per_day', 'half_year_per_day', 'single_entry', 
+                        'single_entry_reuse', 'card_deposit', 'school_name', 
+                        'school_iban', 'school_bic', 'imprint', 'privacy'
+                    ];
+                    
+                    if (in_array($key, $allowedKeys)) {
+                        $stmt->execute([
+                            'name' => $key,
+                            'val' => (string)$value,
+                            'val2' => (string)$value
+                        ]);
+                    }
                 }
+                
+                $pdo->commit();
+                $response['success'] = true;
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $response['error'] = 'Fehler beim Speichern der Einstellungen: ' . $e->getMessage();
             }
-            
-            $pdo->commit();
-            $response['success'] = true;
             break;
 
         case 'updateUserRole':

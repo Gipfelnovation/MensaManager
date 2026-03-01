@@ -5,7 +5,7 @@ import {
   AlertCircle, CheckCircle, RefreshCw, X, Edit2, Trash2, 
   DollarSign, ChevronRight, Ban, ShieldAlert, Check, Clock,
   Loader2, Lock, LogOut, Camera, RotateCcw, Settings, Save, Calendar, Plus,
-  Filter, Download, Calculator, BarChart3
+  Filter, Download, Calculator, BarChart3, Bold, Italic, Underline, List, ListOrdered, Type
 } from 'lucide-react';
 
 const API_BASE = '/api'; 
@@ -33,6 +33,49 @@ const formatWeekdays = (daysStr) => {
     'MONDAY': 'Mo', 'TUESDAY': 'Di', 'WEDNESDAY': 'Mi', 'THURSDAY': 'Do', 'FRIDAY': 'Fr'
   };
   return daysStr.split(',').map(d => map[d.trim().toUpperCase()] || d.trim()).join(', ');
+};
+
+// --- EINFACHER HTML EDITOR (WORD-LIKE) ---
+const SimpleHtmlEditor = ({ label, value, onChange }) => {
+  const editorRef = useRef(null);
+
+  const execCommand = (command, val = null) => {
+    document.execCommand(command, false, val);
+    if (editorRef.current) {
+      onChange(editorRef.current.innerHTML);
+    }
+  };
+
+  useEffect(() => {
+    if (editorRef.current && editorRef.current.innerHTML !== value) {
+      editorRef.current.innerHTML = value || '';
+    }
+  }, [value]);
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-sm font-medium text-gray-700">{label}</label>
+      <div className="border border-gray-300 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 transition-all bg-white">
+        <div className="flex flex-wrap items-center gap-1 p-2 bg-gray-50 border-b border-gray-200">
+          <button type="button" onClick={() => execCommand('bold')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Fett"><Bold className="h-4 w-4" /></button>
+          <button type="button" onClick={() => execCommand('italic')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Kursiv"><Italic className="h-4 w-4" /></button>
+          <button type="button" onClick={() => execCommand('underline')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Unterstrichen"><Underline className="h-4 w-4" /></button>
+          <div className="w-px h-4 bg-gray-300 mx-1"></div>
+          <button type="button" onClick={() => execCommand('insertUnorderedList')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Aufzählung"><List className="h-4 w-4" /></button>
+          <button type="button" onClick={() => execCommand('insertOrderedList')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Nummerierung"><ListOrdered className="h-4 w-4" /></button>
+          <div className="w-px h-4 bg-gray-300 mx-1"></div>
+          <button type="button" onClick={() => execCommand('formatBlock', 'h3')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Überschrift"><Type className="h-4 w-4" /></button>
+          <button type="button" onClick={() => execCommand('formatBlock', 'p')} className="p-1.5 hover:bg-gray-200 rounded text-gray-600" title="Text">P</button>
+        </div>
+        <div 
+          ref={editorRef}
+          contentEditable 
+          className="p-4 min-h-[150px] outline-none prose prose-sm max-w-none text-gray-800"
+          onInput={(e) => onChange(e.currentTarget.innerHTML)}
+        ></div>
+      </div>
+    </div>
+  );
 };
 
 // --- DEPOSIT MODAL (EINZAHLUNG) ---
@@ -331,7 +374,7 @@ const AssignCardModal = ({ assignData, onClose, onComplete }) => {
       if ('BarcodeDetector' in window) {
         try {
           const formats = await window.BarcodeDetector.getSupportedFormats();
-          detector = new window.BarcodeDetector({ formats: formats.length ? formats : ['qr_code', 'code_128', 'ean_13', 'ean_8', 'upc_e', 'upc_a'] });
+          detector = new window.BarcodeDetector({ formats: formats.length ? formats : ['qr_code', 'code_128', 'ean_13', 'ean_8', 'upc_e', 'upc_e', 'upc_a'] });
         } catch (e) {
           detector = new window.BarcodeDetector();
         }
@@ -550,8 +593,8 @@ export default function App() {
   const [assignModalData, setAssignModalData] = useState(null);
   const [payAboModalData, setPayAboModalData] = useState(null);
   const [payTransactionModalData, setPayTransactionModalData] = useState(null);
-  const [depositModalData, setDepositModalData] = useState(null); // NEU
-  const [userSettingsModalData, setUserSettingsModalData] = useState(null); // NEU
+  const [depositModalData, setDepositModalData] = useState(null); 
+  const [userSettingsModalData, setUserSettingsModalData] = useState(null); 
 
   const [dashboardData, setDashboardData] = useState(null);
   const [parentData, setParentData] = useState(null);
@@ -801,7 +844,7 @@ export default function App() {
     const userId = cleanId(rawUserId);
     runAction('deleteUserAccount', { userId }, () => {
       setUserSettingsModalData(null);
-      fetchDashboard(); // Nach dem Löschen zurück zum Dashboard
+      fetchDashboard(); 
     });
   };
 
@@ -814,21 +857,18 @@ export default function App() {
   const collectCard = (cardId, studentId, listHasActiveAbo = null) => {
     let hasActiveAbo = false;
 
-    // Entweder wird der Wert aus der Listenansicht übergeben, oder wir schauen im aktuellen parentData nach
     if (listHasActiveAbo !== null) {
       hasActiveAbo = listHasActiveAbo;
     } else if (parentData) {
     const studentAbos = parentData.subscriptions.filter(a => a.studentId === studentId);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
-    // Prüfen, ob der Schüler noch ein aktives Abo hat
     hasActiveAbo = studentAbos.some(abo => {
       if (!abo.endDate) return true;
       return new Date(abo.endDate) >= today;
     });
     } else {
-      return; // Failsafe
+      return;
     }
 
     let confirmMsg = "Karte einsammeln?\n\nDas System wird das Kartenpfand auf das Elternkonto zurückerstatten und die Karte löschen.";
@@ -859,20 +899,13 @@ export default function App() {
   });
 
   const exportPendingCards = () => {
-    // Spaltenköpfe
     const headers = ['Klasse', 'Schüler', 'Bestelldatum'];
-    
-    // Reihen zusammenbauen (Semikolon für deutsches Excel)
     const rows = filteredPendingCards.map(card => [
       card.grade || '',
       card.studentName || '',
       formatDate(card.orderDate) || ''
     ].join(';'));
-
-    // UTF-8 BOM hinzufügen (\uFEFF), damit Excel Umlaute richtig erkennt
     const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + [headers.join(';'), ...rows].join('\n');
-    
-    // Download anstoßen
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -882,38 +915,25 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-    // --- NEU: BROWSER HISTORY LOGIK FÜR DEN ZURÜCK-BUTTON ---
-
-  // 1. Speichert den aktuellen Zustand im Browser-Verlauf (URL Hash)
   useEffect(() => {
     if (!isAuthenticated || !currentView) return;
-    
-    // Generiert z.B. #tab=dashboard&view=parentDetail&id=p123
     const newHash = `#view=${currentView.type}${currentView.id ? `&id=${currentView.id}` : ''}`;
-    
     if (window.location.hash !== newHash) {
       if (!window.location.hash) {
-        // Initiale Seite ersetzen, damit man nicht in einer Endlosschleife feststeckt
         window.history.replaceState(null, '', newHash);
       } else {
-        // Neue Seite in den Verlauf pushen
         window.history.pushState(null, '', newHash);
       }
     }
   }, [currentView, isAuthenticated]);
 
-  // 2. Hört auf den "Zurück"-Button (popstate) und lädt die Daten neu
   useEffect(() => {
     if (!isAuthenticated) return;
-
     const handlePopState = () => {
       if (!window.location.hash) return;
-      
       const params = new URLSearchParams(window.location.hash.replace('#', '?'));
       const viewType = params.get('view');
       const viewId = params.get('id');
-
-      // Daten anhand der wiederhergestellten Ansicht neu laden
       if (viewType === 'dashboard') fetchDashboard();
       else if (viewType === 'parentDetail' && viewId) loadParentDetail(viewId);
       else if (viewType === 'pendingCards') loadPendingCards();
@@ -922,17 +942,12 @@ export default function App() {
       else if (viewType === 'accounting') loadAccounting();
       else if (viewType) setCurrentView({ type: viewType, id: viewId || null });
     };
-
     window.addEventListener('popstate', handlePopState);
-    
-    // Fängt auch Deep-Links beim ersten Laden ab (z.B. wenn man direkt einen Link zu einer Seite aufruft)
     if (window.location.hash) {
       handlePopState();
     }
-
     return () => window.removeEventListener('popstate', handlePopState);
   }, [isAuthenticated]); 
-  // --- ENDE BROWSER HISTORY LOGIK ---
 
   // --- COMPONENTS ---
   const LoginScreen = () => {
@@ -949,12 +964,10 @@ export default function App() {
       const handleResize = () => {
         if (captchaParentRef.current) {
           const parentWidth = captchaParentRef.current.offsetWidth;
-          // Standardbreite von reCAPTCHA ist 304px
           const newScale = parentWidth / 304;
           setCaptchaScale(newScale);
         }
       };
-
       handleResize();
       window.addEventListener('resize', handleResize);
       return () => window.removeEventListener('resize', handleResize);
@@ -977,7 +990,6 @@ export default function App() {
         });
         const textData = await res.text();
         const data = JSON.parse(textData);
-        
         if (data.success && data.isAdmin) {
           fetchDashboard(); 
         } else {
@@ -1070,7 +1082,6 @@ export default function App() {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState([]);
     const [isSearching, setIsSearching] = useState(false);
-    
     useEffect(() => {
       if (query.trim().length < 2) {
         setResults([]);
@@ -1086,12 +1097,9 @@ export default function App() {
           setIsSearching(false);
         }
       }, 300); 
-
       return () => clearTimeout(delayDebounceFn);
     }, [query]);
-
     if (!isSearchOpen) return null;
-
     const getIcon = (iconName) => {
       switch(iconName) {
         case 'Users': return Users;
@@ -1101,7 +1109,6 @@ export default function App() {
         default: return Users;
       }
     };
-
     return (
       <div className="fixed inset-0 z-50 bg-gray-900/50 backdrop-blur-sm flex justify-center items-start pt-20 px-4">
         <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -1116,11 +1123,9 @@ export default function App() {
               <X className="h-5 w-5" />
             </button>
           </div>
-          
           <div className="max-h-[60vh] overflow-y-auto p-2">
             {query.length > 0 && query.length < 2 && <p className="text-center text-gray-500 py-8">Bitte mindestens 2 Zeichen eingeben...</p>}
             {query.length >= 2 && results.length === 0 && !isSearching && <p className="text-center text-gray-500 py-8">Keine Ergebnisse für "{query}" gefunden.</p>}
-            
             {results.map((item, idx) => {
               const Icon = getIcon(item.iconType);
               return (
@@ -1146,17 +1151,27 @@ export default function App() {
     if (!dashboardData) return null;
     const { stats, recentTransactions, defaultValues } = dashboardData;
     const [prices, setPrices] = useState(defaultValues || {});
-    const [isSaving, setIsSaving] = useState(false);
+    const [isSavingPrices, setIsSavingPrices] = useState(false);
+    const [isSavingBank, setIsSavingBank] = useState(false);
+    const [isSavingLegal, setIsSavingLegal] = useState(false);
 
     const handlePriceChange = (e) => {
       setPrices({ ...prices, [e.target.name]: e.target.value });
     };
 
-    const savePrices = () => {
-      setIsSaving(true);
-      // Aktion 'updateSettings' wird an actions.php gesendet
+    const handleHtmlChange = (field, html) => {
+      setPrices({ ...prices, [field]: html });
+    };
+
+    const saveSettings = (section) => {
+      let loadingStateSetter;
+      if (section === 'prices') loadingStateSetter = setIsSavingPrices;
+      else if (section === 'bank') loadingStateSetter = setIsSavingBank;
+      else if (section === 'legal') loadingStateSetter = setIsSavingLegal;
+
+      loadingStateSetter(true);
       runAction('updateSettings', prices, () => {
-        setIsSaving(false);
+        loadingStateSetter(false);
         refreshCurrentView();
       });
     };
@@ -1235,11 +1250,11 @@ export default function App() {
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex flex-col">
             <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
               <Settings className="h-5 w-5 text-gray-500" /> Preise & Einstellungen
             </h3>
-            <div className="space-y-4">
+            <div className="space-y-4 flex-1">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Preis Ganzjahresabo (pro ausgewähltem Tag)</label>
                 <div className="relative">
@@ -1261,6 +1276,7 @@ export default function App() {
                   <span className="absolute right-3 top-2.5 text-gray-400">€</span>
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Preis Nachschlag</label>
                 <div className="relative">
@@ -1275,10 +1291,75 @@ export default function App() {
                   <span className="absolute right-3 top-2.5 text-gray-400">€</span>
                 </div>
               </div>
-              <button onClick={savePrices} disabled={isSaving} className="w-full mt-4 bg-gray-900 hover:bg-gray-800 text-white font-medium py-2.5 px-4 rounded-xl transition-colors flex items-center justify-center gap-2">
-                {isSaving ? <Loader2 className="h-5 w-5 animate-spin" /> : <Save className="h-5 w-5" />} Speichern
-              </button>
+              </div>
+              <div className="pt-2">
+                <button onClick={() => saveSettings('prices')} disabled={isSavingPrices} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-xl shadow-md transition-all flex items-center justify-center gap-2">
+                  {isSavingPrices ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Preise speichern
+                </button>
+              </div>
             </div>
+          </div>
+        </div>
+
+        {/* --- ÜBERWEISUNGS-EMPFÄNGER --- */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex flex-col">
+            <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+              <DollarSign className="h-5 w-5 text-gray-500" /> Überweisungs-Empfänger
+            </h3>
+            <div className="space-y-4 flex-1">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Kontoinhaber (Schule)</label>
+                <input type="text" name="school_name" value={prices.school_name || ''} onChange={handlePriceChange} className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Name der Schule / Träger" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">IBAN</label>
+                <input type="text" name="school_iban" value={prices.school_iban || ''} onChange={handlePriceChange} className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="DE00 0000 0000 0000 0000 00" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">BIC</label>
+                <input type="text" name="school_bic" value={prices.school_bic || ''} onChange={handlePriceChange} className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="BANKDEBBXXX" />
+              </div>
+              <div className="pt-2">
+                <button onClick={() => saveSettings('bank')} disabled={isSavingBank} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-xl shadow-md transition-all flex items-center justify-center gap-2">
+                  {isSavingBank ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Bankdaten speichern
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex flex-col justify-center items-center text-center space-y-4">
+            <div className="bg-blue-50 p-4 rounded-full">
+              <ShieldAlert className="h-8 w-8 text-blue-600" />
+            </div>
+            <h3 className="text-lg font-bold text-gray-800 tracking-tight">Systemkonfiguration</h3>
+            <p className="text-sm text-gray-500 max-w-xs">
+              Bitte beachte, dass Änderungen an den Preisen und Bankverbindungen direkte Auswirkungen auf die Abrechnungen und Eltern-Accounts haben. Beim Ändern des Kartenpfands wird dieser Wert auch zum Zurückerstatten beim Einsammeln der Karte verwendet – es kann eine Differenz zwischen Bezahlung und Rückerstattung entstehen! Beim Ändern der Bankverbindung wird KEINE Benachrichtigung an Accounts mit offenen Rechnungen gesendet – die Änderung gilt nur für neue Bestellungen!
+            </p>
+            </div>
+        </div>
+
+        {/* --- RECHTLICHE TEXTE (WYSIWYG) --- */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-6">
+          <div className="flex justify-between items-center border-b border-gray-100 pb-4">
+            <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+            <FileText className="h-5 w-5 text-gray-500" /> Rechtliche Dokumente
+          </h3>
+            <button onClick={() => saveSettings('legal')} disabled={isSavingLegal} className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 text-sm">
+              {isSavingLegal ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Dokumente speichern
+            </button>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <SimpleHtmlEditor 
+              label="Impressum" 
+              value={prices.imprint} 
+              onChange={(html) => handleHtmlChange('imprint', html)} 
+            />
+            <SimpleHtmlEditor 
+              label="Datenschutzerklärung" 
+              value={prices.privacy} 
+              onChange={(html) => handleHtmlChange('privacy', html)} 
+            />
           </div>
         </div>
       </div>
@@ -1288,7 +1369,6 @@ export default function App() {
   const ParentDetail = () => {
     if (!parentData || !parentData.parent) return <div className="p-8 text-center">Elternaccount Daten nicht verfügbar.</div>;
     const { parent, students, cards, subscriptions, transactions } = parentData;
-
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1460,7 +1540,6 @@ export default function App() {
             })}
           </div>
         </div>
-
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="p-6 border-b border-gray-200"><h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2"><RefreshCw className="h-5 w-5 text-indigo-500"/> Transaktionsverlauf</h2></div>
           <div className="overflow-x-auto">
@@ -1572,7 +1651,7 @@ export default function App() {
         card.cardNumber || '',
         card.grade || '',
         card.studentName || '',
-        card.parentName || ''
+        card.parentName || []
       ].join(';'));
       const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + [headers.join(';'), ...rows].join('\n');
       
@@ -1897,7 +1976,6 @@ export default function App() {
       <p className="text-gray-500 font-medium animate-pulse">Lade Systemdaten...</p>
     </div>
   );
-
   if (error) return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
       <div className="bg-white p-8 rounded-2xl shadow-sm border border-red-100 max-w-md w-full text-center space-y-4">
