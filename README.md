@@ -1,3 +1,4 @@
+
 # MensaPay & MensaManager
 
 Ein integriertes System zur Verwaltung der Schulverpflegung — Benutzerportal für Eltern/Schüler und Administrationsbereich für die Schule. Unterstützt Mensa-Abos, Prepaid-Guthaben und physische Chipkartenverwaltung.
@@ -23,38 +24,64 @@ MensaPay digitalisiert Bestellung und Bezahlung der Schulverpflegung. Eltern ver
 # Hauptfunktionen
 
 ## Benutzerportal
-- **Dashboard** — Echtzeit-Übersicht über Familienguthaben und letzte Transaktionen.  
-- **Abo-Verwaltung** — Buchung von Halbjahres- oder Ganzjahresabos für spezifische Wochentage.  
-- **Guthaben-Management** — Aufladen via PayPal, Klarna oder Banküberweisung.  
-- **Karten-Selbstverwaltung** — Sperren verlorener Karten und Beantragung von Ersatzkarten.  
-- **Nutzungshistorie** — Transparente Auflistung aller Käufe; Abo-Nutzungen werden direkt im Abo-Modul gezählt.
+-   **Dashboard** — Echtzeit-Übersicht über das Familienguthaben und die letzten Transaktionen
+-   **Abo-Verwaltung** — Buchung von Halbjahres- oder Ganzjahresabos für spezifische Wochentage
+-   **Guthaben-Management** — Nahtlose Aufladung via PayPal, Klarna oder Banküberweisung (mit automatisiert generierter Verwendungszweck-PIN)
+-   **Karten-Selbstverwaltung** — Beantragung neuer Karten, temporäres Sperren bei Verlust und Beantragung von Ersatzkarten inkl. Pfandverrechnung
+-   **Nutzungshistorie** — Transparente Auflistung aller Käufe; Abo-Nutzungen werden direkt im Abo-Modul tagesaktuell gezählt.
 
 ## Admin-Bereich
-- **Benutzerverwaltung** — Zentraler Überblick über registrierte Eltern, Schüler und Admins.  
-- **Karten-Management** — Zuweisung physischer Chip-IDs zu Card-Holder-Profilen; Statusmanagement (`active`/`inactive`).  
-- **Konfiguration** — Systemweite Preissteuerung über die Tabelle `default_values` (z. B. Kartenpfand, Abo-Preise).  
-- **Berichtswesen & Monitoring** — Zahlungseingänge, Kontostände, Audit-Logs; Exportfähige Reports für Buchhaltung und Verein.
+- **Benutzerverwaltung** — Zentraler Überblick über registrierte Eltern, Schüler und Admins inklusive strikter Rollenverteilung und DSGVO-konformer Löschfunktion
+- **Karten-Management** — Zuweisung physischer Chip-IDs über integrierten Barcode-Scanner und Kamera; Statusmanagement (Aktiv, Gesperrt, Bestellt) sowie automatische Pfanderstattung beim Einsammeln
+- **Transaktions- & Zahlungsverwaltung** — Manuelle Bestätigung von Barzahlungen/Überweisungen via PIN, Bearbeitung unbezahlter Transaktionen und sichere Rückerstattungen
+- **Konfiguration** — Systemweite Steuerung von Preisen, Bankverbindungen und rechtlichen Texten (via integriertem WYSIWYG-Editor) über die Tabelle `default_values`
+- **Berichtswesen & Monitoring** — Detailliertes Dashboard, Zahlungseingänge, Kontostände, Wochentags-Auswertungen und exportfähige Excel/CSV-Reports für die Buchhaltung
 
 # Tech-Stack
 - Frontend: React.js, Tailwind CSS, Lucide React (Icons)  
 - Backend: PHP (PDO für Datenbankzugriff)  
-- Zahlungsabwicklung: Server-SDK-Integration (Backend-Modul)  
+- Zahlungsabwicklung: PayPal Server-SDK & Klarna Payments API (Backend-verifiziert) 
 - Datenbank: MySQL
 
 # Datenbank-Struktur
 Kerntabellen — Kurzbeschreibung und Verantwortlichkeiten:
-- `users` — Authentifizierte Accounts für Eltern und Admins; Rollensteuerung.  
-- `accounts` — Familienkonten und Saldenverwaltung.  
-- `card_holders` — Schülerprofile: Zuordnung zu Accounts, Allergien/Notizen.  
-- `chip_cards` — Physische Karten (chip_id, status, issued_at).  
-- `subscriptions` — Aktive Abos mit Wochentagen, Gültigkeitszeiträumen und Rabattlogik.  
-- `account_transactions` — Vollständiges Protokoll aller Geld- und Essensbewegungen (Audit-ready).  
-- `default_values` — Zentrale Parameter (z. B. `card_deposit`, `full_year_per_day`), Quelle für alle Preisvalidierungen.
+- `users` — Authentifizierte Accounts für Eltern und Admins; Rollensteuerung sowie TOTP-Secrets für 2FA
+- `accounts` — Familienkonten und Saldenverwaltung
+- `card_holders` — Schülerprofile: Zuordnung zu Eltern-Accounts (`created_by`)
+- `chip_cards` — Physische Karten (chip_id, status, issued_at)
+- `subscriptions` — Aktive Abos mit Wochentagen, Gültigkeitszeiträumen und Rabattlogik
+- `account_transactions` —Vollständiges Protokoll aller Geld- und Essensbewegungen (inklusive `admin_id` für Audit-Logs)
+- `default_values` — Zentrale Parameter (z. B. `card_deposit`, `full_year_per_day`), Quelle für alle Preisvalidierungen
 
 # Sicherheitshinweise  
-- Alle Preise und Konditionen werden serverseitig gegen `default_values` verifiziert — Einschränkung Client-seitiger Manipulation.  
-- Passwörter werden mittels `password_hash` sicher gespeichert; sensible Endpunkte erfordern Rollen-/Rechteprüfung.  
-- Zahlungs- und Kontodaten sind nur über verschlüsselte Verbindungen (TLS) zu übertragen; Alle Zugriffe auf den Backend-API werden auf Rechte überprüft.
+
+Das System ist nach dem Prinzip "Zero Trust" (Backend vertraut keinen Client-Eingaben) und "Defense in Depth" aufgebaut:
+
+-   **Authentifizierung, Sessions & Anti-Brute-Force:** - Zweistufiger Login mit obligatorischer **Zwei-Faktor-Authentifizierung (2FA/TOTP)** für Administratoren.
+    
+    -   Effektiver Schutz vor Brute-Force und Credential Stuffing durch ein **IP-basiertes Rate-Limiting** (Sperrung nach 5 Fehlversuchen für 15 Minuten), eine künstliche Latenz (`sleep(1)`) bei Fehlschlägen und ein vorgeschaltetes **hCaptcha**.
+        
+    -   Gehärtete Session-Cookies (`HttpOnly`, `Secure`, `SameSite=Strict`) und aktiver Schutz vor Session-Fixation via `session_regenerate_id(true)` bei jedem Login. Passwörter werden sicher mittels `password_hash()` (Bcrypt/Argon2) gespeichert und strenge Passwortrichtlinien (Regex) werden bereits bei der Registrierung erzwungen.
+        
+-   **API- & Daten-Sicherheit (CORS & IDOR):** - Striktes **CORS-Setup** (Whitelist exakter Domains statt Wildcards) verhindert das Abgreifen von Daten durch fremde Websites.
+    
+    -   Konsequenter Schutz vor **IDOR (Insecure Direct Object References)**: Bei jeder API-Anfrage (z.B. Kartensperrung, Abo-Kauf) wird serverseitig über SQL-Subselects (`WHERE created_by = ?`) verifiziert, ob die manipulierte Objekt-ID (z.B. `holder_id`) auch wirklich dem authentifizierten Benutzer gehört.
+        
+-   **Transaktionssicherheit & Race Conditions:** - Verhinderung von doppelten Guthabenabzügen (**Race Conditions**) durch strenge Zeilen-Sperren in der Datenbank (`SELECT ... FOR UPDATE`). Konkurrierende Anfragen auf denselben Kontostand werden blockiert, bis die laufende Transaktion abgeschlossen ist.
+    
+    -   Sichere Datenbank-Transaktionen (`$pdo->beginTransaction()`) nach dem ACID-Prinzip.
+        
+    -   Strikte Input-Validierung: Aufladebeträge werden serverseitig auf realistische Limits (0.01€ bis 1000€) geprüft, um Integer-Overflows oder das Einschleusen negativer Beträge auszuhebeln.
+        
+    -   Revisionssicheres **Audit-Log** (Speicherung der ausführenden Admin-ID bei jeder schreibenden Finanzaktion).
+        
+-   **Schutz vor Web-Schwachstellen (SQLi & XSS):** - Einsatz von CSRF-Prävention durch `SameSite=Strict`-Cookies und CORS-Richtlinien für alle schreibenden API-Anfragen.
+    
+    -   Vollständiger Schutz vor SQL-Injection durch ausnahmslose Verwendung von **PDO Prepared Statements**.
+        
+    -   Prävention von Cross-Site-Scripting (XSS) durch serverseitige Bereinigung von Payloads (`htmlspecialchars(strip_tags(...))`) sowie automatisches Output-Encoding durch das React-Frontend.
+        
+-   **Architektur (Zero Client-Side Trust):** - Alle Preise, Gebühren und Konditionen werden ausnahmslos serverseitig gegen die Tabelle `default_values` berechnet. Das Backend akzeptiert keine Preisvorgaben aus dem manipulierbaren Frontend. Zahlungs-Intents (PayPal/Klarna) werden sicher in der Backend-Session zwischengespeichert und verifiziert.
 
 # Entwickelt für
 Entwickelt für das Gymnasium Hohenschwangau.
@@ -66,4 +93,4 @@ Entwickelt für das Gymnasium Hohenschwangau.
 ---
 
 ## Executive Summary
-Produktionsreifes Konzept für digitales Mensa-Management: klare Trennung Benutzer/Admin, serverseitige Preisvalidierung, nachvollziehbare Transaktionen und zentrale Konfigurationsbasis. Weiterer Fokus: Datenschutz/DSGVO-Compliance und regelmäßige Sicherheitsupdates.
+Produktionsreifes Konzept für digitales Mensa-Management: Klare Trennung zwischen Benutzer- und Administrationsbereich, strikte serverseitige Preisvalidierung, revisionssichere Transaktions-Architektur, starke Authentifizierung (2FA & Captcha) und eine zentrale, datenbankgesteuerte Konfigurationsbasis. Weiterer Fokus: Lückenlose Datenschutz/DSGVO-Compliance und eine kontinuierlich gehärtete Sicherheitsarchitektur.
