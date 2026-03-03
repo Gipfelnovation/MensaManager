@@ -21,6 +21,7 @@ import {
   Landmark,
   Loader2
 } from 'lucide-react';
+import HCaptcha from '@hcaptcha/react-hcaptcha';
 
 // Map für dynamisches Zuweisen von Icons aus dem Backend
 const IconMap = {
@@ -389,6 +390,9 @@ export default function App() {
   const [resetSuccessMsg, setResetSuccessMsg] = useState('');
   const [showExpiredAbos, setShowExpiredAbos] = useState(false);
 
+  const captchaRef = React.useRef(null);
+  const [captchaToken, setCaptchaToken] = useState('');
+
   const handleLogout = () => {
     fetch('/api/data.php?action=logout', { credentials: 'include' })
       .catch(err => console.error("Logout error", err))
@@ -407,7 +411,7 @@ export default function App() {
     
     fetch('/api/data.php?action=getData', { credentials: 'include' })
       .then(response => {
-        if (!response.ok) throw new Error('Netzwerk-Antwort war nicht ok');
+        if (!response.ok && response.status !== 401) throw new Error('Netzwerk-Antwort war nicht ok');
         return response.json();
       })
       .then(data => {
@@ -445,7 +449,9 @@ export default function App() {
       .catch(err => {
         console.error("Fehler beim API-Abruf.", err);
         if (isLoggedIn) handleLogout();
+        if (isLoggedIn) {
         setAuthError("Verbindung zum Server fehlgeschlagen. Bitte erneut einloggen.");
+        }
       })
       .finally(() => {
         if (showLiquid) {
@@ -543,13 +549,19 @@ export default function App() {
   const handleLogin = (e) => {
     if (e) e.preventDefault();
     setAuthError('');
+
+    if (!captchaToken) {
+      setAuthError('Bitte bestätige, dass du ein Mensch bist (Captcha).');
+      return;
+    }
+
     setIsAuthLoading(true);
 
     fetch('/api/data.php?action=login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ email: authData.email, passwort: authData.password })
+      body: JSON.stringify({ email: authData.email, passwort: authData.password, captchaToken: captchaToken })
     })
     .then(r => r.json())
     .then(data => {
@@ -559,17 +571,28 @@ export default function App() {
       } else {
         setAuthError(data.message || 'Login fehlgeschlagen');
         setIsAuthLoading(false);
+        if (captchaRef.current) captchaRef.current.resetCaptcha();
+        setCaptchaToken('');
       }
     })
     .catch(() => {
       setAuthError('Netzwerkfehler. Bitte Server prüfen.');
       setIsAuthLoading(false);
+      if (captchaRef.current) captchaRef.current.resetCaptcha();
+      setCaptchaToken('');
     });
   };
 
   const handleRegister = (e) => {
     e.preventDefault();
     setAuthError('');
+
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+    if (!passwordRegex.test(authData.password)) {
+      setAuthError('Das Passwort entspricht nicht den Sicherheitsanforderungen (mind. 8 Zeichen, Groß-/Klein, Zahl, Sonderzeichen).');
+      return;
+    }
+
     if (authData.password !== authData.passwordConfirm) {
       setAuthError('Die Passwörter stimmen nicht überein.');
       return;
@@ -631,6 +654,13 @@ export default function App() {
     e.preventDefault();
     setAuthError('');
     setResetSuccessMsg('');
+
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+    if (!passwordRegex.test(authData.password)) {
+      setAuthError('Das Passwort entspricht nicht den Sicherheitsanforderungen (mind. 8 Zeichen, Groß-/Klein, Zahl, Sonderzeichen).');
+      return;
+    }
+
     if (authData.password !== authData.passwordConfirm) {
       setAuthError('Die Passwörter stimmen nicht überein.');
       return;
@@ -1024,6 +1054,12 @@ export default function App() {
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">{authMode === 'reset_password' ? 'Neues Passwort' : 'Passwort'}</label>
                     <input required type="password" value={authData.password} onChange={e => setAuthData({...authData, password: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
+                    {(authMode === 'register' || authMode === 'reset_password') && (
+                      <p className="text-xs text-slate-500 mt-2 flex items-start gap-1">
+                        <ShieldCheck size={14} className="shrink-0 text-slate-400" />
+                        Mind. 8 Zeichen, inkl. Groß-/Kleinbuchstaben, Zahl & Sonderzeichen.
+                      </p>
+                    )}
                   </div>
                 )}
                 {(authMode === 'register' || authMode === 'reset_password') && (
@@ -1032,6 +1068,17 @@ export default function App() {
                     <input required type="password" value={authData.passwordConfirm} onChange={e => setAuthData({...authData, passwordConfirm: e.target.value})} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all" placeholder="••••••••" />
                   </div>
                 )}
+
+                {authMode === 'login' && (
+                  <div className="flex justify-center mt-4">
+                    <HCaptcha
+                      sitekey="***REMOVED***" 
+                      onVerify={(token) => setCaptchaToken(token)}
+                      ref={captchaRef}
+                    />
+                  </div>
+                )}
+
                 <button 
                   type="submit" 
                   disabled={isAuthLoading}

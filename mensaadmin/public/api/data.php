@@ -1,7 +1,20 @@
 <?php
 // data.php - API Endpoint
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+
+// --- SICHERHEIT: Strikte CORS Konfiguration (Keine Wildcards mehr) ---
+$allowed_origins = [
+    'https://admin.mensamanager.de'
+];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+if (in_array($origin, $allowed_origins)) {
 header("Access-Control-Allow-Origin: $origin");
+} else {
+    // Fallback: Wenn der Origin nicht in der Liste ist oder nicht mitgesendet wird (Same-Origin)
+    // Wird der Zugriff für externe Cross-Origin Anfragen blockiert.
+    header("Access-Control-Allow-Origin: " . ($_SERVER['HTTP_HOST'] ?? 'localhost'));
+}
+
 header('Access-Control-Allow-Credentials: true');
 header('Content-Type: application/json; charset=utf-8');
 
@@ -14,6 +27,14 @@ try {
 
     // --- AUTHENTIFIZIERUNG ---
     session_name("mensa_login");
+    // SICHERHEIT: Session-Cookies für API-Aufrufe ebenfalls strikt halten
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path' => '/',
+        'secure' => true,
+        'httponly' => true,
+        'samesite' => 'Strict'
+    ]);
     session_start();
 
     $isAdmin = false;
@@ -42,12 +63,18 @@ try {
         echo json_encode(['error' => 'Zugriff verweigert. Session abgelaufen oder keine Admin-Rechte.']);
         exit;
     }
+
+    // SICHERHEIT: CSRF-Token für die API-Kommunikation generieren, falls nicht vorhanden
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
     // --- ENDE AUTHENTIFIZIERUNG ---
 
     $action = $_GET['action'] ?? 'dashboard';
     $response = [];
 
     if ($action === 'dashboard') {
+        $response['csrfToken'] = $_SESSION['csrf_token']; // SICHERHEIT: CSRF-Token ans Frontend übergeben
         $response['stats'] = [
             'totalBalance' => 0.0,
             'activeCards' => 0,
@@ -107,6 +134,23 @@ try {
     } 
     
     elseif ($action === 'search') {
+        // SICHERHEIT: Rate Limiting für die Suchfunktion (Schutz vor Scraping)
+        if (!isset($_SESSION['last_search_time'])) {
+            $_SESSION['last_search_time'] = time();
+            $_SESSION['search_count'] = 0;
+        }
+        if (time() - $_SESSION['last_search_time'] < 10) { // Zeitfenster: 10 Sekunden
+            $_SESSION['search_count']++;
+            if ($_SESSION['search_count'] > 15) { // Max 15 Suchen pro 10 Sekunden
+                http_response_code(429);
+                echo json_encode(['error' => 'Zu viele Suchanfragen. Bitte kurz warten.']);
+                exit;
+            }
+        } else {
+            $_SESSION['last_search_time'] = time();
+            $_SESSION['search_count'] = 1;
+        }
+
         $query = $_GET['q'] ?? '';
         $searchTerm = "%$query%";
         $results = [];

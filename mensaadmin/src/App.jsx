@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import ReCAPTCHA from "react-google-recaptcha";
 import { 
   Search, Home, Users, CreditCard, FileText, Activity, 
   AlertCircle, CheckCircle, RefreshCw, X, Edit2, Trash2, 
@@ -7,6 +6,7 @@ import {
   Loader2, Lock, LogOut, Camera, RotateCcw, Settings, Save, Calendar, Plus,
   Filter, Download, Calculator, BarChart3, Bold, Italic, Underline, List, ListOrdered, Type
 } from 'lucide-react';
+import HCaptcha from '@hcaptcha/react-hcaptcha';
 
 const API_BASE = '/api'; 
 
@@ -589,6 +589,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [currentView, setCurrentView] = useState({ type: 'dashboard', id: null });
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [csrfToken, setCsrfToken] = useState(''); // NEU: CSRF Token Status
   
   const [assignModalData, setAssignModalData] = useState(null);
   const [payAboModalData, setPayAboModalData] = useState(null);
@@ -645,6 +646,7 @@ export default function App() {
     try {
       const data = await fetchJson(`${API_BASE}/data.php?action=dashboard`);
       setDashboardData(data);
+      if (data.csrfToken) setCsrfToken(data.csrfToken); // NEU: Token abspeichern
       setIsAuthenticated(true);
       setCurrentView({ type: 'dashboard', id: null });
     } catch (err) {
@@ -775,7 +777,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/actions.php`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken // NEU: Sicherheits-Token bei jeder Aktion mitsenden
+        },
         body: JSON.stringify({ action: actionName, data }),
         credentials: 'include'
       });
@@ -951,6 +956,10 @@ export default function App() {
 
   // --- COMPONENTS ---
   const LoginScreen = () => {
+    const [step, setStep] = useState('login'); // NEU: 'login' oder '2fa'
+    const [totpCode, setTotpCode] = useState(''); // NEU
+    const [setupData, setSetupData] = useState(null); // NEU
+
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [stayLoggedIn, setStayLoggedIn] = useState(false);
@@ -971,7 +980,7 @@ export default function App() {
       handleResize();
       window.addEventListener('resize', handleResize);
       return () => window.removeEventListener('resize', handleResize);
-    }, []);
+    }, [step]); // Update Resize-Listener bei Schrittwechsel
 
     const handleLogin = async (e) => {
       e.preventDefault();
@@ -985,15 +994,45 @@ export default function App() {
         const res = await fetch(`${API_BASE}/login.php`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, passwort: password, angemeldet_bleiben: stayLoggedIn, captcha: captchaToken }),
+          body: JSON.stringify({ action: 'login', email, passwort: password, angemeldet_bleiben: stayLoggedIn, captcha: captchaToken }),
           credentials: 'include'
         });
-        const textData = await res.text();
-        const data = JSON.parse(textData);
-        if (data.success && data.isAdmin) {
+        const data = await res.json();
+        
+        if (data.requires2FA) {
+          if (data.setupSecret) {
+            setSetupData({ secret: data.setupSecret, email: data.email });
+          }
+          setStep('2fa');
+        } else if (data.success && data.isAdmin) {
           fetchDashboard(); 
         } else {
           setLoginErr(data.error || 'Login fehlgeschlagen. Keine Admin-Rechte?');
+        }
+      } catch (err) {
+        setLoginErr(`Verbindungsfehler: ${err.message}`);
+      } finally {
+        setIsLoggingIn(false);
+      }
+    };
+
+    const handle2FA = async (e) => {
+      e.preventDefault();
+      setIsLoggingIn(true);
+      setLoginErr('');
+      try {
+        const res = await fetch(`${API_BASE}/login.php`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'verify_2fa', totp_code: totpCode, angemeldet_bleiben: stayLoggedIn }),
+          credentials: 'include'
+        });
+        const data = await res.json();
+        
+        if (data.success && data.isAdmin) {
+          fetchDashboard(); 
+        } else {
+          setLoginErr(data.error || 'Der eingegebene Code ist falsch.');
         }
       } catch (err) {
         setLoginErr(`Verbindungsfehler: ${err.message}`);
@@ -1013,38 +1052,74 @@ export default function App() {
           </div>
           {loginErr && (
             <div className="mb-6 p-4 bg-red-50 rounded-xl border border-red-100 flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
+              <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />
               <p className="text-sm text-red-700">{loginErr}</p>
             </div>
           )}
-          <form onSubmit={handleLogin} className="space-y-5">
+
+          {step === 'login' ? (
+            <form onSubmit={handleLogin} className="space-y-5 animate-in fade-in zoom-in-95 duration-200">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">E-Mail Adresse</label>
-              <input type="email" required className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500" value={email} onChange={e => setEmail(e.target.value)} />
+                <input type="email" required className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 outline-none" value={email} onChange={e => setEmail(e.target.value)} />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Passwort</label>
-              <input type="password" required className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500" value={password} onChange={e => setPassword(e.target.value)} />
+                <input type="password" required className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 outline-none" value={password} onChange={e => setPassword(e.target.value)} />
             </div>
             <div ref={captchaParentRef} className="w-full overflow-hidden rounded-xl border border-gray-200 bg-gray-50 flex justify-center items-center h-[78px]">
-              <div style={{ 
-                transform: `scale(${captchaScale})`, 
-                transformOrigin: 'center center'
-              }}>
-                <ReCAPTCHA
-                  sitekey="***REMOVED***"
-                  onChange={(token) => setCaptchaToken(token)}
-                />
+                <div style={{ transform: `scale(${captchaScale})`, transformOrigin: 'center center' }}>
+                  <HCaptcha sitekey="***REMOVED***" onVerify={(token) => setCaptchaToken(token)} />
               </div>
             </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="stayLoggedIn" checked={stayLoggedIn} onChange={e => setStayLoggedIn(e.target.checked)} className="w-4 h-4 text-blue-600 rounded" />
               <label htmlFor="stayLoggedIn" className="text-sm text-gray-700 cursor-pointer">Angemeldet bleiben</label>
             </div>
-            <button type="submit" disabled={isLoggingIn} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 disabled:opacity-70">
-              {isLoggingIn ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Anmelden'}
+              <button type="submit" disabled={isLoggingIn} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 disabled:opacity-70 transition-colors">
+                {isLoggingIn ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Weiter'}
             </button>
           </form>
+          ) : (
+            <form onSubmit={handle2FA} className="space-y-5 animate-in slide-in-from-right-8 duration-300">
+              {setupData && (
+                <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-sm mb-4 space-y-3">
+                  <p className="font-bold flex items-center gap-2"><ShieldAlert className="h-5 w-5" /> 2FA Setup erforderlich</p>
+                  <p>Du musst die Zwei-Faktor-Authentifizierung einrichten. Bitte scanne den Code mit einer App wie <b>Google Authenticator</b> oder <b>Authy</b>.</p>
+                  <div className="bg-white p-2 rounded-lg border border-amber-200 flex justify-center">
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=otpauth://totp/MensaAdmin:${setupData.email}?secret=${setupData.secret}&issuer=Mensa`} 
+                      alt="QR Code" 
+                      className="w-32 h-32" 
+                    />
+                  </div>
+                  <p className="text-center text-xs break-all text-amber-700 font-mono">{setupData.secret}</p>
+                </div>
+              )}
+              
+              <div>
+                <label className="block text-sm font-bold text-gray-900 mb-1 text-center">6-stelliger Authenticator Code</label>
+                <input 
+                  type="text" 
+                  autoFocus
+                  required 
+                  maxLength={6}
+                  placeholder="000000"
+                  className="w-full text-center tracking-[0.5em] font-mono text-2xl px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 outline-none" 
+                  value={totpCode} 
+                  onChange={e => setTotpCode(e.target.value.replace(/[^0-9]/g, ''))} 
+                />
+              </div>
+              <div className="flex gap-3">
+                <button type="button" onClick={() => setStep('login')} disabled={isLoggingIn} className="flex-1 border border-gray-300 text-gray-700 hover:bg-gray-50 font-semibold py-3 px-4 rounded-xl disabled:opacity-70 transition-colors">
+                  Zurück
+                </button>
+                <button type="submit" disabled={isLoggingIn || totpCode.length !== 6} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 disabled:opacity-70 transition-colors">
+                  {isLoggingIn ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Verifizieren'}
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       </div>
     );

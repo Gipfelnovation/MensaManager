@@ -1,9 +1,18 @@
 <?php
-// actions.php - API Endpoint zum Ausführen von Aktionen
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+// --- SICHERHEIT: Strikte CORS Konfiguration ---
+$allowed_origins = [
+    'https://admin.mensamanager.de'       // Für lokale Entwicklung
+];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+if (in_array($origin, $allowed_origins)) {
 header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: " . ($_SERVER['HTTP_HOST'] ?? 'localhost'));
+}
+
 header('Access-Control-Allow-Credentials: true');
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Methods: POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 
@@ -19,10 +28,21 @@ require_once($_SERVER['DOCUMENT_ROOT'] . "/api/config.inc.php");
 
 // --- AUTHENTIFIZIERUNG ---
 session_name("mensa_login");
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'secure' => true,
+    'httponly' => true,
+    'samesite' => 'Strict'
+]);
 session_start();
 
 $isAdmin = false;
 $currentUserId = null;
+
+if (!isset($_SESSION['userid'])) {
+    http_response_code(401);
+}
 
 if (isset($_SESSION['userid'])) {
     $stmt = $pdo->prepare("SELECT status FROM users WHERE id = ?");
@@ -51,12 +71,30 @@ if (!$isAdmin || !$currentUserId) {
     echo json_encode(['error' => 'Zugriff verweigert. Session abgelaufen oder keine Admin-Rechte.']);
     exit;
 }
-// --- ENDE AUTHENTIFIZIERUNG ---
 
+// --- SICHERHEIT: CSRF-Schutz ---
+$clientCsrf = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+if (empty($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $clientCsrf)) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Ungültiges Sicherheits-Token (CSRF). Bitte Seite neu laden.']);
+    exit;
+}
+// --- ENDE CSRF SCHUTZ ---
 
 $input = json_decode(file_get_contents('php://input'), true);
 $action = $input['action'] ?? '';
 $data = $input['data'] ?? [];
+
+// --- SICHERHEIT: Anti-Race-Condition (Idempotency) ---
+// Verhindert versehentliche Doppelbuchungen bei zu schnellem Klicken
+$payloadHash = md5(json_encode($input));
+if (isset($_SESSION['last_action_hash']) && $_SESSION['last_action_hash'] === $payloadHash && time() - $_SESSION['last_action_time'] < 2) {
+    echo json_encode(['success' => true, 'note' => 'Ignoriert, da exaktes Duplikat innerhalb von 2 Sekunden']);
+    exit;
+}
+$_SESSION['last_action_hash'] = $payloadHash;
+$_SESSION['last_action_time'] = time();
+// --- ENDE ANTI-RACE-CONDITION ---
 
 $response = ['success' => false];
 
@@ -123,9 +161,10 @@ try {
                 $pdo->beginTransaction();
                 $refundAmount = abs((float)$tx['amount']);
                 $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?")->execute([$refundAmount, $tx['account_id']]);
+                // SICHERHEIT: Audit Log (wer hat erstattet?)
                 $desc = "Erstattung für: " . $tx['description'];
-                $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at) VALUES (?, ?, 'REFUND', ?, NOW())")
-                    ->execute([$tx['account_id'], $refundAmount, $desc]);
+                $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'REFUND', ?, NOW(), ?)")
+                    ->execute([$tx['account_id'], $refundAmount, $desc, $currentUserId]);
                 $pdo->commit();
                 $response['success'] = true;
             } else {
@@ -139,12 +178,20 @@ try {
             $response['success'] = $stmt->execute([$aboId]);
             break;
 
+        case 'markAboPaid':
+            $aboId = (int) str_replace('abo', '', $data['aboId']);
+            // SICHERHEIT: Audit Log (Admin-ID nicht mehr in Description, nur noch regulär abspeichern falls nötig)
+            $txNr = strip_tags($data['transactionNr']);
+            $stmt = $pdo->prepare("UPDATE subscriptions SET transaction_nr = ? WHERE subscription_id = ?");
+            $response['success'] = $stmt->execute([$txNr, $aboId]);
+            break;
+
         case 'markTransactionPaid':
             $unpaidId = (int) $data['unpaidId'];
-            $transactionNr = $data['transactionNr']; // z.B. "Überweisung 28.02.2025 123456"
+            // SICHERHEIT: Audit Log
+            $transactionNr = strip_tags($data['transactionNr']);
 
             $pdo->beginTransaction();
-
             $stmt = $pdo->prepare("SELECT ut.subscription_id, ut.transaction_id, t.amount, t.description, t.transaction_type, t.account_id 
                                    FROM unpaid_transactions ut
                                    JOIN account_transactions t ON ut.transaction_id = t.transaction_id
@@ -153,30 +200,24 @@ try {
             $ut = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($ut) {
-                // 1. Beschreibung der Transaktion aktualisieren 
-                // Ersetzt Klammern wie "(warten auf Zahlungseingang)" mit der neuen "(Überweisung ... PIN)"
                 $newDesc = preg_replace('/\s*\([^)]*(warten|ausstehend|Zahlungseingang|unbezahlt)[^)]*\)/i', " ($transactionNr)", $ut['description']);
                 if ($newDesc === $ut['description']) {
-                    // Falls nichts zum Ersetzen gefunden wurde, einfach anhängen
                     $newDesc .= " ($transactionNr)";
                 }
 
-                $stmt = $pdo->prepare("UPDATE account_transactions SET description = ? WHERE transaction_id = ?");
-                $stmt->execute([$newDesc, $ut['transaction_id']]);
+                $stmt = $pdo->prepare("UPDATE account_transactions SET description = ?, admin_id = ? WHERE transaction_id = ?");
+                $stmt->execute([$newDesc, $currentUserId, $ut['transaction_id']]);
 
-                // 2. Abos Logik (falls die Zahlung mit einem Abo verknüpft ist)
                 if (!empty($ut['subscription_id'])) {
             $stmt = $pdo->prepare("UPDATE subscriptions SET transaction_nr = ? WHERE subscription_id = ?");
                     $stmt->execute([$transactionNr, $ut['subscription_id']]);
                 }
 
-                // 3. Aufladung Logik: Bei TOPUP wird die amount nun der Account Balance hinzugefügt
                 if ($ut['transaction_type'] === 'TOPUP') {
                     $stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?");
                     $stmt->execute([abs((float)$ut['amount']), $ut['account_id']]);
                 }
 
-                // 4. Aus unpaid_transactions löschen, da nun bezahlt
                 $stmt = $pdo->prepare("DELETE FROM unpaid_transactions WHERE unpaid_id = ?");
                 $stmt->execute([$unpaidId]);
 
@@ -200,6 +241,7 @@ try {
         case 'deposit':
             $userId = (int) str_replace('p', '', $data['parentId']);
             $amount = (float) $data['amount'];
+            // SICHERHEIT: Audit Log (wer hat eingezahlt?)
             $desc = $data['description'] ?: 'Manuelle Einzahlung (Admin)';
 
             if ($amount <= 0) {
@@ -220,8 +262,8 @@ try {
                 $stmt->execute([$amount, $accountId]);
                 
                 // 2. Transaktionshistorie pflegen
-                $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at) VALUES (?, ?, 'TOPUP', ?, NOW())");
-                $stmt->execute([$accountId, $amount, $desc]);
+                $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'TOPUP', ?, NOW(), ?)");
+                $stmt->execute([$accountId, $amount, $desc, $currentUserId]);
                 
                 $pdo->commit();
                 $response['success'] = true;
@@ -245,10 +287,12 @@ try {
                     ];
                     
                     if (in_array($key, $allowedKeys)) {
+                        // SICHERHEIT: HTML-Tags strikt filtern, außer bei den rechtlichen Dokumenten
+                        $cleanValue = in_array($key, ['imprint', 'privacy']) ? $value : strip_tags((string)$value);
                         $stmt->execute([
                             'name' => $key,
-                            'val' => (string)$value,
-                            'val2' => (string)$value
+                            'val' => $cleanValue,
+                            'val2' => $cleanValue
                         ]);
                     }
                 }
@@ -262,6 +306,11 @@ try {
             break;
 
         case 'updateUserRole':
+            // SICHERHEIT: Selbst-Aussperrung (Sich selbst die Admin-Rechte entziehen) verhindern
+            if ((int)$data['userId'] === (int)$currentUserId && $data['role'] !== 'ADMIN') {
+                $response['error'] = 'Du kannst dir nicht selbst die Admin-Rechte entziehen.';
+                break;
+            }
             $stmt = $pdo->prepare("UPDATE users SET status = ? WHERE id = ?");
             $stmt->execute([$data['role'], $data['userId']]);
             $response['success'] = true;
@@ -269,6 +318,11 @@ try {
 
         case 'deleteUserAccount':
             $accountId = $data['userId'];
+            // SICHERHEIT: Löschung des eigenen Accounts über das Admin-Panel verhindern
+            if ((int)$accountId === (int)$currentUserId) {
+                $response['error'] = 'Du kannst deinen eigenen Account hier nicht löschen.';
+                break;
+            }
             try {
                 $pdo->beginTransaction();
                 
@@ -322,8 +376,8 @@ try {
                     $stmt->execute([$depositAmount, $accountId]);
                     
                     // 4. Transaktion "Pfand zurückerstattet" eintragen
-                    $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at) VALUES (?, ?, 'REFUND', 'Kartenpfand zurückerstattet', NOW())");
-                    $stmt->execute([$accountId, $depositAmount]);
+                    $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'REFUND', 'Kartenpfand zurückerstattet', NOW(), ?)");
+                    $stmt->execute([$accountId, $depositAmount, $currentUserId]);
                 }
             }
             
@@ -350,12 +404,13 @@ try {
             $response['error'] = 'Unbekannte Aktion';
             break;
     }
-} catch (\Exception $e) {
+} catch (Exception $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
     }
-    error_log("Mensa Admin API Error [actions.php]: " . $e->getMessage());
-    $response['error'] = 'Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuche es später erneut.';
+    error_log("Aktions-Fehler: " . $e->getMessage());
+    $response['error'] = 'Datenbankfehler bei der Ausführung.';
 }
 
 echo json_encode($response);
+?>
