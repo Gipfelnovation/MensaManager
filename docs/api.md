@@ -83,4 +83,4 @@ Die Anbindung von Klarna und PayPal folgt einem strikten **Zwei-Schritt-Verfahre
 
 Dieses Vorgehen garantiert, dass ein Hacker den Warenkorbinhalt zwischen dem Checkout und der Bezahlung nicht manipulieren kann.
 
-🔙 [Zurück zur Hauptseite](./docs/README.md)
+🔙 [Zurück zur Hauptseite](/docs/README.md)
