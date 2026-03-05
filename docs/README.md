@@ -11,7 +11,7 @@ Das System digitalisiert die Bestellung und Bezahlung der Schulverpflegung am Gy
 
 Hier findest du Anleitungen zur Bedienung der verschiedenen Benutzeroberflächen.
 
--   [🧑‍💻 Benutzerinterface (Eltern & Schüler)](./docs/user.md)
+-   [🧑‍💻 Benutzerinterface (Eltern & Schüler)](/docs/user.md)
     
 -   [🎓 Lehrerinterface (Mensa-Ausgabe)](./docs/lehrer.md)
     
