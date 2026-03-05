@@ -71,4 +71,4 @@ Durch `FOR UPDATE` müssen zeitgleiche Transaktionen warten, bis der aktuelle Pr
 -   **Preis-Validierung:** Bei Käufen wird nicht der Betrag aus dem Frontend übernommen. Stattdessen berechnet das Backend die Kosten anhand der Tabelle `default_values` komplett neu.
     
 
-🔙 [Zurück zur Hauptseite](./docs/README.md) | ➡️ [Weiter zu den API-Kernfunktionen](./docs/api.md)
+🔙 [Zurück zur Hauptseite](/docs/README.md) | ➡️ [Weiter zu den API-Kernfunktionen](/docs/api.md)
