@@ -13,18 +13,18 @@ Hier findest du Anleitungen zur Bedienung der verschiedenen Benutzeroberflächen
 
 -   [🧑‍💻 Benutzerinterface (Eltern & Schüler)](/docs/user.md)
     
--   [🎓 Lehrerinterface (Mensa-Ausgabe)](./docs/lehrer.md)
+-   [🎓 Lehrerinterface (Mensa-Ausgabe)](/docs/lehrer.md)
     
--   [🛡️ Admininterface (Schulverwaltung)](./docs/admin.md)
+-   [🛡️ Admininterface (Schulverwaltung)](/docs/admin.md)
     
 
 ### 2. Technische Dokumentation (Backend & API)
 
 Hier finden Entwickler alle Informationen zur Architektur, Datenbank und den Kernfunktionen des Systems.
 
--   [🏗️ Architektur, Datenbank & Sicherheit](./docs/security.md)
+-   [🏗️ Architektur, Datenbank & Sicherheit](/docs/security.md)
     
--   [⚙️ API & Kernfunktionen (Code-Doku)](./docs/api.md)
+-   [⚙️ API & Kernfunktionen (Code-Doku)](/docs/api.md)
     
 
 ## 🛠️ Tech-Stack Übersicht
