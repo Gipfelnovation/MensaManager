@@ -3,7 +3,7 @@
 
 Dieses Interface richtet sich an Lehrkräfte und das Verwaltungspersonal, welches für die Ausgabe und Rücknahme der physischen Chipkarten (RFID/NFC) an die Schüler zuständig ist.
 
-> **Wichtiger Hinweis:** Das Lehrerinterface ist eine reduzierte Ansicht des Admin-Portals und erfordert spezielle Berechtigungen (Rolle: "Kartenausgabe").
+> **Wichtiger Hinweis:** Das Lehrerinterface ist eine reduzierte Ansicht des Admin-Portals und erfordert spezielle Berechtigungen (Rolle: "TEACHER").
 
 ## 1. Kartenausgabe (Ersteinrichtung & Ersatzkarten)
 
@@ -43,4 +43,4 @@ Wenn ein Schüler die Schule verlässt oder nicht mehr in der Mensa essen möcht
     -   Das System verbucht das Kartenpfand (z.B. 5,00 €) automatisch als Guthaben-Rückerstattung auf das Account-Guthaben der Eltern.
         
 
-🔙 [Zurück zur Hauptseite](./docs/README.md)
+🔙 [Zurück zur Hauptseite](/docs/README.md)
