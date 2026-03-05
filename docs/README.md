@@ -11,20 +11,22 @@ Das System digitalisiert die Bestellung und Bezahlung der Schulverpflegung am Gy
 
 Hier findest du Anleitungen zur Bedienung der verschiedenen Benutzeroberflächen.
 
--   [🧑‍💻 Benutzerinterface (Eltern & Schüler)](/docs/user.md)
+-   [🧑‍💻 Benutzerinterface (Eltern & Schüler)](./user/frontend.md)
     
--   [🎓 Lehrerinterface (Mensa-Ausgabe)](/docs/lehrer.md)
+-   [🎓 Lehrerinterface (Mensa-Ausgabe)](./lehrer/frontend.md)
     
--   [🛡️ Admininterface (Schulverwaltung)](/docs/admin.md)
+-   [🛡️ Admininterface (Schulverwaltung)](./admin/frontend.md)
     
 
 ### 2. Technische Dokumentation (Backend & API)
 
-Hier finden Entwickler alle Informationen zur Architektur, Datenbank und den Kernfunktionen des Systems.
+Das Backend ist modular aufgebaut. Da jedes Interface über eigene Berechtigungsstrukturen und Endpunkte verfügt, ist die technische Dokumentation (Architektur & API) nach den drei Systembereichen getrennt:
 
--   [🏗️ Architektur, Datenbank & Sicherheit](/docs/security.md)
+-   [🧑‍💻 Backend: Benutzerinterface](./user/backend.md) _(Eltern/Schüler API)_
     
--   [⚙️ API & Kernfunktionen (Code-Doku)](/docs/api.md)
+-   [🎓 Backend: Lehrerinterface](./lehrer/backend.md) _(Mensa-Ausgabe API)_
+    
+-   [🛡️ Backend: Admininterface](./admin/backend.md) _(Schulverwaltung API)_
     
 
 ## 🛠️ Tech-Stack Übersicht

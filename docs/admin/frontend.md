@@ -58,4 +58,4 @@ Das System ist hochdynamisch. Unter den Einstellungen können zentrale Parameter
 -   **Rechtstexte:** Impressum und Datenschutzerklärung können über einen integrierten WYSIWYG-Editor gepflegt werden.
     
 
-🔙 [Zurück zur Hauptseite](/docs/README.md) | ➡️ [Weiter zur Backend-Architektur](/docs/security.md)
+🔙 [Zurück zur Hauptseite](/docs/README.md)
