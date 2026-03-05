@@ -60,4 +60,4 @@ Auf dem Dashboard findest du eine detaillierte Liste aller Geldbewegungen:
 -   (Zukünftig: Ansicht der einzelnen Essensabbuchungen direkt in der Mensa)
     
 
-🔙 [Zurück zur Hauptseite](./docs/documentation.md)
+🔙 [Zurück zur Hauptseite](./docs/README.md)

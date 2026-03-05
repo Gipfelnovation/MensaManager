@@ -43,4 +43,4 @@ Wenn ein Schüler die Schule verlässt oder nicht mehr in der Mensa essen möcht
     -   Das System verbucht das Kartenpfand (z.B. 5,00 €) automatisch als Guthaben-Rückerstattung auf das Account-Guthaben der Eltern.
         
 
-🔙 [Zurück zur Hauptseite](./docs/documentation.md)
+🔙 [Zurück zur Hauptseite](./docs/README.md)
