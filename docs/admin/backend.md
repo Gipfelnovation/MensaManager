@@ -1,79 +1,93 @@
 
 # 🛡️ Backend-Dokumentation: Admininterface
 
-Das Admin-Backend (`admin_actions.php` / `admin_data.php`) ist die weitreichendste API des MensaManagers. Sie verarbeitet sensible Nutzerdaten, verändert globale Preise und schließt Finanzbuchungen ab.
+Das Admin-Backend (`actions.php`, `data.php` und `login.php`) ist die weitreichendste API des MensaManagers. Sie verarbeitet sensible Nutzerdaten, verändert globale Preise und schließt Finanzbuchungen ab.
 
 ## 1. Architektur & Sicherheit (Admin API)
 
-Aufgrund der hohen Privilegien ist die Admin-API durch zusätzliche, mehrschichtige Sicherheitsmaßnahmen geschützt.
+Aufgrund der hohen Privilegien ist die Admin-API durch modernste, mehrschichtige Sicherheitsmaßnahmen (nach OWASP Top 10 Standards) geschützt.
 
-### 1.1 Strikte Authentifizierung (2FA)
+### 1.1 Strikte Authentifizierung (2FA) & Session-Sicherheit
 
-Neben dem herkömmlichen Session-Check erfordert die API zwingend den Nachweis eines erfolgreich absolvierten Zwei-Faktor-Logins (TOTP). Ist das Flag `$_SESSION['2fa_verified']` nicht gesetzt, wird der Zugriff blockiert.
-
-### 1.2 Audit Logging & Revisionssicherheit
-
-Jede Aktion, die Geldbeträge oder Systemkonfigurationen verändert, muss revisionssicher sein.
-
--   Finanzielle Manuelleingriffe speichern in der Tabelle `account_transactions` nicht nur den Betrag, sondern in einer speziellen Spalte `admin_id` auch die ID des ausführenden Sekretariats-Mitarbeiters.
+-   **Zwei-Faktor-Authentifizierung (TOTP):** Der Login erfolgt zweistufig. Nach der Passwort-Prüfung ist zwingend ein 6-stelliger Authenticator-Code erforderlich.
     
--   Stornierungen löschen keine Datensätze, sondern erzeugen eine dokumentierte Gegenbuchung (Storno).
+-   **Bot- & Brute-Force-Schutz:** Der Login ist durch **hCaptcha** geschützt und verfügt über ein strenges Rate-Limiting (max. 5 Fehlversuche, 15 Minuten Sperre), welches IP-Spoofing-sicher implementiert ist.
+    
+-   **Session-Härtung:** Sessions nutzen `session_regenerate_id(true)` (Schutz vor Session-Fixation) und setzen strikte Cookies (`HttpOnly`, `Secure`, `SameSite=Strict`).
     
 
-### 1.3 CSRF-Schutz via Tokens
+### 1.2 Audit Logging & Transaktionssicherheit (ACID)
 
-Da Admins weitreichende Rechte haben (z.B. "User löschen"), müssen sie besonders vor Cross-Site Request Forgery (CSRF) geschützt werden. Jeder schreibende POST-Request an die Admin-API muss zwingend ein CSRF-Token im HTTP-Header (`X-CSRF-Token`) übergeben, das bei der Dashboard-Initialisierung generiert wurde.
+Jede Aktion, die Geldbeträge verändert, ist revisionssicher und transaktional abgesichert:
+
+-   **Audit-Log:** Finanzielle Manuelleingriffe speichern in der Tabelle `account_transactions` nicht nur den Betrag, sondern in einer dedizierten Spalte `admin_id` auch die ID des ausführenden Administrators.
+    
+-   **Anti-Race-Conditions:** Alle schreibenden API-Calls verwenden Idempotency-Hashes. Schnelle Doppelklicks (innerhalb von 2 Sekunden) werden verworfen, um Doppelbuchungen zu verhindern.
+    
+-   **Strikte Input-Validierung:** Bei Einzahlungen werden serverseitig ausschließlich strikt positive Beträge (`abs()`, `> 0`) akzeptiert. Stornierungen erfolgen als dokumentierte Gegenbuchung (Typ `REFUND`).
+    
+
+### 1.3 API-Schutz: CSRF, CORS & IDOR
+
+-   **CSRF-Schutz via Tokens:** Jeder schreibende POST-Request an `actions.php` muss zwingend ein valides CSRF-Token im HTTP-Header (`X-CSRF-Token`) übergeben.
+    
+-   **CORS-Whitelist:** Wildcards (`*`) sind deaktiviert. Die API antwortet nur auf Anfragen der exakt zugelassenen Frontend-Domains.
+    
+-   **Schutz vor IDOR:** Jede API-Route prüft serverseitig die Session und das Admin-Flag (`status === 'ADMIN'`). Das Manipulieren von IDs durch den Client (z. B. `userId=5`) ist wirkungslos, wenn die Rechte fehlen. Selbst-Aussperrungen sind programmatisch blockiert.
+    
 
 ## 2. API Endpunkte (Admin)
 
-### 2.1 Finanz- & Zahlungsverwaltung
+### 2.1 Lesende Endpunkte (`GET /api/data.php`)
 
--   `GET /api/admin_actions.php?action=getUnpaidTransactions`
-    
-    -   **Funktion:** Liefert alle Datensätze aus `unpaid_transactions`. Dies sind Vorkasse-Bestellungen (Überweisung) mit der generierten Zahlungs-PIN.
-        
--   `POST /api/admin_actions.php?action=confirmBankTransfer`
-    
-    -   **Payload:** `transactionId`, `paymentPin`
-        
-    -   **Funktion:** Bestätigt den manuellen Geldeingang auf dem echten Bankkonto.
-        
-    -   **Logik:** Löscht die Buchung aus `unpaid_transactions` und führt die ursprünglich geparkte Aktion (Guthaben erhöhen, Abo aktivieren, Karte bestellen) nun final in der Datenbank aus.
-        
+Der zentrale Lese-Endpoint lädt gebündelt Daten für das React-Frontend. Er verfügt über Rate-Limiting für aufwendige Abfragen (wie die Suche).
 
-### 2.2 Systemkonfiguration (`default_values`)
-
--   `GET /api/admin_actions.php?action=getConfig`
+-   `?action=dashboard`: Liefert System-Metriken (KPIs), die 5 letzten Transaktionen und alle `default_values` (Preise, Bankdaten, Rechtstexte).
     
-    -   **Funktion:** Liest alle Parameter (Preise, IBAN, Rechtstexte) aus der Datenbank aus.
-        
--   `POST /api/admin_actions.php?action=updateConfig`
+-   `?action=parent&id=...`: Liefert alle verknüpften Schüler, Abos, Chipkarten und die Transaktionshistorie eines bestimmten Eltern-Accounts.
     
-    -   **Payload:** Key-Value-Paare (z.B. `half_year_per_day: 85.00`)
-        
-    -   **Funktion:** Überschreibt die Konfiguration in der Datenbank. Betrifft **nur** zukünftige Buchungen. Laufende Abos bleiben unberührt.
-        
-
-### 2.3 Nutzerverwaltung & DSGVO
-
--   `GET /api/admin_data.php?action=getAllUsers`
+-   `?action=search&q=...`: Globale AJAX-Suche über alle Eltern, Schüler, Klassen und Kartennummern.
     
-    -   **Funktion:** Liefert eine Liste aller Accounts inklusive aller untergeordneten `card_holders` und verknüpften `chip_cards` sowie dem aktuellen Guthaben-Saldo.
-        
--   `POST /api/admin_actions.php?action=deleteUser`
+-   `?action=active_cards` / `?action=pending`: Liefert Listen aller aktiven Chipkarten bzw. anstehenden Kartenbestellungen.
     
-    -   **Payload:** `userId`, `deletionReason`
-        
-    -   **Funktion:** Führt eine DSGVO-konforme Account-Löschung aus. Personenbezogene Daten (Name, E-Mail) in `users` und `card_holders` werden genullt/anonymisiert. Transaktionslogs bleiben aus buchhalterischen Gründen (steuerrechtliche Aufbewahrungsfrist) anonymisiert in `account_transactions` bestehen (z.B. verknüpft mit `account_id = deleted_123`).
-        
-
-### 2.4 Berichte & Exporte
-
--   `GET /api/admin_data.php?action=generateFinancialReport`
+-   `?action=unpaid`: Liefert ausstehende Zahlungen aus `unpaid_transactions` (inkl. PIN).
     
-    -   **Parameter:** `startDate`, `endDate`
-        
-    -   **Funktion:** Aggregiert alle Einträge aus `account_transactions` für den gewählten Zeitraum. Trennt Umsätze in Kategorien (Prepaid-Aufladungen vs. Abo-Käufe) auf und liefert sie als JSON zur Weiterverarbeitung (z.B. Excel-Export) an das Frontend.
-        
+-   `?action=accounting`: Aggregiert Finanzdaten für einen bestimmten Zeitraum (Umsätze, Pfand, Abo-Verteilungen nach Wochentag).
+    
+-   `?action=accounting_export`: Liefert Detaildaten für den Excel/CSV-Export.
+    
+
+### 2.2 Schreibende Endpunkte (`POST /api/actions.php`)
+
+Dieser Endpoint verarbeitet alle administrativen Mutationen über einen strukturierten JSON-Body (`{ "action": "...", "data": {...} }`).
+
+**Finanz- & Zahlungsverwaltung:**
+
+-   `deposit`: Manuelle Guthaben-Aufladung (erfordert positive Beträge, loggt `admin_id`).
+    
+-   `markTransactionPaid`: Verarbeitet Geldeingänge (Überweisung) via PIN. Schreibt das Geld gut, aktiviert Abos, löscht den Vorkasse-Eintrag und setzt das Audit-Log.
+    
+-   `markAboPaid`: Setzt den Status eines Abos auf bezahlt und hinterlegt die Belegnummer.
+    
+-   `refundTransaction`: Storniert eine Abbuchung sicher und bucht den Betrag als Gegenbuchung (mit `admin_id` und Prefix "Erstattung") zurück aufs Familienkonto.
+    
+
+**Systemkonfiguration (`default_values`):**
+
+-   `updateSettings`: Verarbeitet dynamische Schlüssel-Wert-Paare (Preise, Bankdaten, Impressum/Datenschutz) und überschreibt diese in der Datenbank. HTML wird strikt gefiltert, außer bei den rechtlichen WYSIWYG-Texten.
+    
+
+**Nutzer- & Kartenverwaltung:**
+
+-   `updateUserRole`: Ändert die RBAC-Rolle eines Nutzers (`USER`, `TEACHER`, `ADMIN`).
+    
+-   `deleteUserAccount`: DSGVO-konforme Löschung. Verknüpfte personenbezogene Daten werden gelöscht, Finanzdaten bleiben buchhalterisch als verwaiste Buchungen erhalten.
+    
+-   `assignCardNumber`: Zuweisung einer RFID/Barcode-ID zu einem Schüler.
+    
+-   `collectCard`: Sammelt eine Karte ein, ändert den Status und löst **automatisch** eine Pfanderstattung auf das Elternkonto aus.
+    
+-   `editStudent` / `updateCardStatus` / `deleteAbo`: Hilfsfunktionen zur Verwaltung der Entitäten.
+    
 
 🔙 [Zurück zur Hauptseite](/docs/README.md)

@@ -1,61 +1,71 @@
 
 # 🛡️ Admininterface (Schulverwaltung)
 
-Das Admin-Portal ist die Steuerzentrale des MensaManager-Systems. Es ist durch eine Zwei-Faktor-Authentifizierung (2FA) geschützt und bietet umfassende Werkzeuge zur Verwaltung des gesamten Mensa-Betriebs.
+Das Admin-Portal ist die von React angetriebene Steuerzentrale des MensaManager-Systems. Es ist als Single-Page-Application (SPA) konzipiert, durch eine Zwei-Faktor-Authentifizierung (2FA) geschützt und bietet umfassende Werkzeuge zur Verwaltung des gesamten Mensa-Betriebs.
 
-## 1. Dashboard & Monitoring
+## 1. Dashboard, Monitoring & Buchhaltung
 
-Das Dashboard bietet eine Echtzeit-Übersicht über alle wichtigen Metriken:
+Das System bietet eine Echtzeit-Übersicht über alle wichtigen Metriken und Finanzströme:
 
--   **Finanzen:** Aktuelle Kontostände, Zahlungseingänge der letzten 30 Tage.
+-   **KPI-Dashboard:** Schneller Überblick über das Gesamtguthaben im System, aktive Chipkarten, unbezahlte Transaktionen und ausstehende Karten.
     
--   **Auslastung:** Wochentags-Auswertungen der Essensausgabe (Wie viele Abos/Schüler essen am Montag, Dienstag etc.?).
+-   **Buchhaltung & Auswertung (`AccountingView`):**
     
--   **Schnellaktionen:** Direkter Zugriff auf unbestätigte Überweisungen oder anstehende Kartenausgaben.
+    -   Aufschlüsselung des Kapitals (Gesamteinzahlungen, Wert externer Abokäufe, Wert Kartenpfand).
+        
+    -   Wochentags-Auswertungen (Balkendiagramm: Wie viele Abos sind für Montag, Dienstag etc. gebucht?).
+        
+    -   Frei wählbare Datumsfilter für Auswertungen.
+        
+    -   **Exporte:** Mit einem Klick können Buchhaltungsdaten (CSV/Excel) für den gewählten Zeitraum exportiert werden.
+        
+
+## 2. Benutzerverwaltung (RBAC) & Accounts
+
+Hier werden alle registrierten Eltern, Schülerprofile und Administratoren verwaltet. Die globale Suche erlaubt das schnelle Auffinden über Namen oder Kartennummern.
+
+-   **Eltern-Dashboard:** Detailansicht eines Accounts mit aktuellem Kontostand, verknüpften Schülern, Karten, aktiven Abos und einer lückenlosen Transaktionshistorie.
+    
+-   **Manuelle Buchungen:** Schulsekretariate können über Modal-Dialoge Guthaben manuell aufladen (z.B. bei Barzahlungen).
+    
+-   **Admin-Rollen:** Zuweisung von Berechtigungen (Elternaccount, Lehrer, Admin) über die Account-Einstellungen.
+    
+-   **Datenschutz (DSGVO):** Tiefe Integration für Account-Löschungen, falls Familien die Schule verlassen. Ein Schutzmechanismus verhindert, dass sich Admins versehentlich selbst löschen oder aussperren.
     
 
-## 2. Benutzerverwaltung (RBAC)
+## 3. Karten-Management & Hardware-Integration
 
-Hier werden alle registrierten Eltern, Schülerprofile und Administratoren verwaltet.
+Umfassende Verwaltung der physischen NFC/RFID/Barcode-Chipkarten.
 
--   **Eltern-Accounts:** Einsehen von hinterlegten Stammdaten, Sperren von problematischen Accounts.
+-   **Listen-Management:** Separate, filterbare Ansichten für _Aktive Karten_ und _Ausstehende Bestellungen_ (inkl. Klassen-Filter und Excel-Export).
     
--   **Datenschutz (DSGVO):** Löschfunktion für Accounts, deren Kinder die Schule verlassen haben (inkl. Anonymisierung der Transaktionshistorie).
+-   **Zuweisung (Scanner-Modal):** Innovatives Zuweisungs-Interface für neue Karten. Unterstützt Geräte-Kameras für die **Aufnahme von Schülerfotos** (zur Identifikation an der Essensausgabe) und integrierte Erkennung von **Barcodes via Camera-Stream**.
     
--   **Admin-Rollen:** Zuweisung von Berechtigungen (z.B. Lese-Rechte vs. volle Kassen-Rechte).
+-   **Status-Verwaltung:** Karten lassen sich manuell sperren, entsperren oder einziehen.
     
-
-## 3. Karten-Management
-
-Verwaltung der physischen NFC/RFID-Chipkarten.
-
--   **Zuweisung:** Zuweisung einer physischen Chip-ID an ein Schülerprofil über einen integrierten Barcode-/NFC-Scanner (Kamera-Support für Tablets).
-    
--   **Status-Verwaltung:** Karten manuell auf _Aktiv_, _Gesperrt_ oder _Ausstehend_ setzen.
-    
--   **Rückgabe:** Wird eine Karte am Ende der Schulzeit unbeschadet eingesammelt, kann über das System automatisch eine Pfanderstattung (auf das virtuelle Familienguthaben) ausgelöst werden.
+-   **Karten-Rückgabe (Pfand):** Wird eine Karte am Ende der Schulzeit eingesammelt, erstattet das System das in den Einstellungen definierte Kartenpfand automatisch mit einem Klick auf das jeweilige Familienguthaben zurück.
     
 
 ## 4. Transaktions- & Zahlungsverwaltung
 
-Dieses Modul dient als Buchhaltungs-Backend.
+Dieses Modul dient der sicheren Abwicklung von Offline-Zahlungen und Support-Fällen.
 
--   **Überweisungen abgleichen:** Wenn Eltern die Zahlungsmethode "Überweisung" wählen, generiert das System eine PIN (z.B. `MENSA X7A9K`). Im Admin-Bereich kann das Schulsekretariat Zahlungseingänge auf dem echten Bankkonto mit dieser PIN abgleichen und die Buchung manuell auf _Bezahlt_ setzen.
+-   **Unbezahlte Transaktionen:** Eine durchsuchbare Liste (nach Betrag oder PIN) für Vorkasse-Zahlungen.
     
--   **Rückerstattungen:** Sicheres Stornieren von Fehlbuchungen oder Abos mit automatischer Guthaben-Anpassung.
+-   **Überweisungen abgleichen:** Wenn Eltern per "Überweisung" zahlen, generiert das System eine PIN (z.B. `123456`). Das Schulsekretariat gleicht Zahlungseingänge auf dem echten Bankkonto ab und markiert sie via Modal als _Bezahlt_. Die PIN und das heutige Datum werden vom System automatisch als Belegnummer vorausgefüllt.
     
--   **Exporte:** Generierung von CSV/Excel-Reporten für die offizielle Schulbuchhaltung.
+-   **Rückerstattungen (Refunds):** Sicheres Stornieren von Fehlbuchungen direkt aus der Transaktionshistorie eines Users heraus. Das System korrigiert das Guthaben und erzeugt transparente Stornobuchungen.
     
 
 ## 5. System-Konfiguration
 
-Das System ist hochdynamisch. Unter den Einstellungen können zentrale Parameter (gespeichert in der `default_values` Datenbank-Tabelle) jederzeit angepasst werden, ohne den Code anfassen zu müssen:
+Das System ist hochdynamisch. Unter den Einstellungen im Dashboard können zentrale Parameter in isolierten Blöcken mit eigenen "Speichern"-Buttons angepasst werden, ohne den Quellcode zu verändern:
 
--   **Preise:** Kartenpfand (z.B. 5,00 €), Preis pro Tag im Halbjahr (z.B. 80,00 €) oder Ganzjahr (z.B. 120,00 €).
+-   **Preise:** Kartenpfand (z.B. 5,00 €), Preis pro Tag im Halbjahr, Ganzjahr sowie Preise für Einzeleintritte und Nachschlag.
     
--   **Bankdaten:** Die im System angezeigte Schul-IBAN und BIC.
+-   **Bankdaten:** Konfiguration des angezeigten Überweisungs-Empfängers (Name der Schule/Träger, IBAN und BIC).
     
--   **Rechtstexte:** Impressum und Datenschutzerklärung können über einen integrierten WYSIWYG-Editor gepflegt werden.
+-   **Rechtstexte (WYSIWYG):** Ein vollwertiger HTML-Editor (mit Formatierungs-Tools für Fett, Kursiv, Listen, Überschriften) zur Pflege von _Impressum_ und _Datenschutzerklärung_ direkt aus dem Dashboard heraus.
     
 
 🔙 [Zurück zur Hauptseite](/docs/README.md)
