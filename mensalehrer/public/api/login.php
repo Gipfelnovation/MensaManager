@@ -1,9 +1,16 @@
 <?php
-// /api/login.php - Minimaler Endpoint für Login & Session Check
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+// /api/login.php - Sicherer Endpoint für Login & Session Check
+$allowed_origins = [
+    'https://lehrer.mensamanager.de'
+];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowed_origins)) {
 header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: " . $allowed_origins[0]); // Fallback
+}
 header('Access-Control-Allow-Credentials: true');
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 
@@ -11,16 +18,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// --- 2. SICHERES SESSION MANAGEMENT ---
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on',
+    'httponly' => true,
+    'samesite' => 'Strict'
+]);
 session_name("mensa_login");
 session_start();
 
 require_once($_SERVER['DOCUMENT_ROOT'] . "/api/config.inc.php");
 
-// --- 1. SESSION CHECK (Wird beim Laden der App aufgerufen via ?check=1) ---
+// --- SESSION CHECK (GET) ---
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['check'])) {
     $isAuthorized = false;
     
-    // Prüfe aktuelle Session
     if (isset($_SESSION['userid'])) {
         $stmt = $pdo->prepare("SELECT status FROM users WHERE id = ?");
         $stmt->execute([$_SESSION['userid']]);
@@ -30,13 +45,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['check'])) {
         }
     }
     
-    // Prüfe "Angemeldet bleiben" Cookie
     if (!$isAuthorized && isset($_COOKIE['identifier']) && isset($_COOKIE['securitytoken'])) {
         $stmt = $pdo->prepare("SELECT u.id, u.status, s.securitytoken FROM securitytokens s JOIN users u ON s.user_id = u.id WHERE s.identifier = ?");
         $stmt->execute([$_COOKIE['identifier']]);
         $tokenData = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($tokenData && sha1($_COOKIE['securitytoken']) === $tokenData['securitytoken']) {
             if ($tokenData['status'] === 'ADMIN' || $tokenData['status'] === 'TEACHER') {
+                session_regenerate_id(true); // Security: Verhindert Session-Fixation auch bei Autologin
                 $_SESSION['userid'] = $tokenData['id'];
                 $isAuthorized = true;
             }
@@ -47,10 +62,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['check'])) {
     exit;
 }
 
-// --- 2. LOGIN PROCESS (Wird beim Absenden des Formulars aufgerufen) ---
+// --- LOGIN PROCESS (POST) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
-    // Lese Daten aus (Unterstützt FormData und JSON)
     $input = $_POST;
     if (empty($input)) {
         $input = json_decode(file_get_contents('php://input'), true) ?? [];
@@ -58,16 +72,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $email = trim($input['email'] ?? '');
     $password = $input['password'] ?? '';
-    $captcha = $input['g-recaptcha-response'] ?? '';
+    $captcha = $input['h-captcha-response'] ?? '';
     
     $ip_address = $_SERVER['REMOTE_ADDR'];
     $max_attempts = 5;
     $lockout_time = 15;
 
-    // 1. Alte (abgelaufene) Login-Versuche bereinigen
+    // Brute-Force Schutz: Alte Logins löschen & IP prüfen
     $pdo->query("DELETE FROM login_attempts WHERE last_attempt < (NOW() - INTERVAL $lockout_time MINUTE)");
-
-    // 2. Prüfen, ob die IP aktuell gesperrt ist
     $stmt = $pdo->prepare("SELECT attempts FROM login_attempts WHERE ip_address = ?");
     $stmt->execute([$ip_address]);
     $attempts = $stmt->fetchColumn();
@@ -78,37 +90,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 3. Captcha Check
+    // Captcha Verifizierung
     if (empty($captcha)) {
         echo json_encode(['success' => false, 'error' => 'Bitte bestätige, dass du kein Roboter bist (Captcha fehlt).']);
         exit;
     }
 
     // ACHTUNG: Trage hier deinen Google reCAPTCHA Secret Key ein!
-    $recaptcha_secret = '***REMOVED***'; 
+    $hcaptcha_secret = '***REMOVED***'; 
     
-    if ($recaptcha_secret !== 'DEIN_SECRET_KEY' && !empty($recaptcha_secret)) {
-        $verifyResponse = file_get_contents('https://www.google.com/recaptcha/api/siteverify?secret=' . $recaptcha_secret . '&response=' . $captcha);
+    if ($hcaptcha_secret !== 'DEIN_HCAPTCHA_SECRET_KEY' && !empty($hcaptcha_secret)) {
+        $data = [
+            'secret' => $hcaptcha_secret,
+            'response' => $captcha
+        ];
+        $options = [
+            'http' => [
+                'method' => 'POST',
+                'header' => 'Content-Type: application/x-www-form-urlencoded',
+                'content' => http_build_query($data)
+            ]
+        ];
+        $context = stream_context_create($options);
+        $verifyResponse = file_get_contents('https://hcaptcha.com/siteverify', false, $context);
         $responseData = json_decode($verifyResponse);
-        if (!$responseData->success) {
+        if (!$responseData || !$responseData->success) {
             echo json_encode(['success' => false, 'error' => 'Captcha ungültig. Bitte lade die Seite neu.']);
             exit;
         }
     }
 
-    // 4. E-Mail und Passwort prüfen
+    // Nutzer prüfen
     $stmt = $pdo->prepare("SELECT id, passwort, status FROM users WHERE email = ?");
     $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($user && password_verify($password, $user['passwort'])) {
-        // Erfolgreicher Login - Prüfe auf Admin oder Lehrer
         if ($user['status'] === 'ADMIN' || $user['status'] === 'TEACHER') {
             
             // Fehlversuche zurücksetzen
             $stmt = $pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
             $stmt->execute([$ip_address]);
 
+            // --- SICHERHEIT: SESSION-FIXATION VERHINDERN ---
+            session_regenerate_id(true); 
             $_SESSION['userid'] = $user['id'];
             
             // Security Token für "Angemeldet bleiben"
@@ -117,8 +142,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $pdo->prepare("INSERT INTO securitytokens (user_id, identifier, securitytoken) VALUES (?, ?, ?)");
             $stmt->execute([$user['id'], $identifier, sha1($securitytoken)]);
             
-            setcookie("identifier", $identifier, time()+(3600*24*365), '/', '', true, true);
-            setcookie("securitytoken", $securitytoken, time()+(3600*24*365), '/', '', true, true);
+            $cookie_options = [
+                'expires' => time() + (3600 * 24 * 365),
+                'path' => '/',
+                'secure' => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on',
+                'httponly' => true,
+                'samesite' => 'Strict'
+            ];
+            setcookie("identifier", $identifier, $cookie_options);
+            setcookie("securitytoken", $securitytoken, $cookie_options);
 
             echo json_encode(['success' => true]);
             exit;

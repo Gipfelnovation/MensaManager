@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import ReCAPTCHA from "react-google-recaptcha";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 import { 
   Search, Users, CreditCard, CheckCircle, 
   X, AlertCircle, Loader2, ArrowRightLeft, 
@@ -313,7 +313,7 @@ export default function TeacherApp() {
 
   const checkAuthStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE}/login.php?check=1`);
+      const response = await fetch(`${API_BASE}/login.php?check=1`, { credentials: 'include' });
       const result = await response.json();
       
       if (result.success) {
@@ -341,11 +341,12 @@ export default function TeacherApp() {
       const formData = new FormData();
       formData.append('email', loginEmail);
       formData.append('password', loginPassword);
-      formData.append('g-recaptcha-response', captchaValue);
+      formData.append('h-captcha-response', captchaValue);
 
       const response = await fetch(`${API_BASE}/login.php`, { 
         method: 'POST', 
-        body: formData 
+        body: formData,
+        credentials: 'include'
       });
       
       const result = await response.json();
@@ -365,7 +366,7 @@ export default function TeacherApp() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${API_BASE}/logout.php`);
+      await fetch(`${API_BASE}/logout.php`, { credentials: 'include' });
       setIsAuthenticated(false);
       setStudents([]);
     } catch (e) {
@@ -377,8 +378,7 @@ export default function TeacherApp() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // 1. Pending Cards abrufen
-      const resPending = await fetch(`${API_BASE}/data.php?action=pending`);
+      const resPending = await fetch(`${API_BASE}/data.php?action=pending`, { credentials: 'include' });
       if (!resPending.ok) {
         if (resPending.status === 403) setIsAuthenticated(false);
         throw new Error(`HTTP Fehler: ${resPending.status}`);
@@ -386,8 +386,7 @@ export default function TeacherApp() {
       const dataPending = await resPending.json();
       if (dataPending.error) throw new Error(dataPending.error);
 
-      // 2. Active Cards abrufen
-      const resActive = await fetch(`${API_BASE}/data.php?action=active_cards`);
+      const resActive = await fetch(`${API_BASE}/data.php?action=active_cards`, { credentials: 'include' });
       if (!resActive.ok) {
         if (resActive.status === 403) setIsAuthenticated(false);
         throw new Error(`HTTP Fehler: ${resActive.status}`);
@@ -438,7 +437,8 @@ export default function TeacherApp() {
 
       const response = await fetch(`${API_BASE}/actions.php`, { 
         method: 'POST', 
-        body: formData 
+        body: formData,
+        credentials: 'include'
       });
       
       if (!response.ok) {
@@ -481,7 +481,8 @@ export default function TeacherApp() {
 
       const response = await fetch(`${API_BASE}/actions.php`, { 
         method: 'POST', 
-        body: formData 
+        body: formData,
+        credentials: 'include'
       });
       
       if (!response.ok) {
@@ -593,10 +594,9 @@ export default function TeacherApp() {
               </div>
 
               <div className="flex justify-center transform scale-90 sm:scale-100 origin-center w-full">
-                {/* ACHTUNG: Hier in Produktion deinen echten Sitekey einfügen */}
-                <ReCAPTCHA
+                <HCaptcha
                   sitekey="***REMOVED***" 
-                  onChange={(val) => setCaptchaValue(val)}
+                  onVerify={(val) => setCaptchaValue(val)}
                 />
               </div>
 

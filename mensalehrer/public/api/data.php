@@ -1,7 +1,16 @@
 <?php
-// data.php - Minimaler API Endpoint für das Lehrer-Interface
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+// data.php - API Endpoint exklusiv für das Lehrer-Interface
+
+// --- 1. SICHERE CORS KONFIGURATION ---
+$allowed_origins = [
+    'https://lehrer.mensamanager.de'
+];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowed_origins)) {
 header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: " . $allowed_origins[0]);
+}
 header('Access-Control-Allow-Credentials: true');
 header('Content-Type: application/json; charset=utf-8');
 
@@ -13,23 +22,29 @@ try {
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     }
 
-    // --- AUTHENTIFIZIERUNG ---
+    // --- 2. SICHERES SESSION MANAGEMENT ---
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path' => '/',
+        'domain' => '', 
+        'secure' => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on',
+        'httponly' => true,
+        'samesite' => 'Strict'
+    ]);
     session_name("mensa_login");
     session_start();
 
     $isAuthorized = false;
-    // Prüfe, ob Nutzer eingeloggt ist und ausreichende Rechte hat
+    
     if (isset($_SESSION['userid'])) {
         $stmt = $pdo->prepare("SELECT status FROM users WHERE id = ?");
         $stmt->execute([$_SESSION['userid']]);
         $status = $stmt->fetchColumn();
-        // Erlaubt für Admins und (falls vorhanden) eine spezielle Lehrer-Rolle
         if ($status === 'ADMIN' || $status === 'TEACHER') {
             $isAuthorized = true;
         }
     }
 
-    // Cookie/Token Fallback (wie in der Original-Datei)
     if (!$isAuthorized && isset($_COOKIE['identifier']) && isset($_COOKIE['securitytoken'])) {
         $stmt = $pdo->prepare("SELECT u.id, u.status, s.securitytoken FROM securitytokens s JOIN users u ON s.user_id = u.id WHERE s.identifier = ?");
         $stmt->execute([$_COOKIE['identifier']]);
@@ -50,7 +65,6 @@ try {
     // --- DATENABFRAGEN FÜR LEHRER ---
     $action = $_GET['action'] ?? '';
 
-    // 1. SCHÜLER OHNE KARTE (PENDING)
     if ($action === 'pending') {
         $stmt = $pdo->query("
         SELECT 
@@ -67,7 +81,6 @@ try {
         exit;
     }
 
-    // 2. SCHÜLER MIT KARTE (ACTIVE)
     if ($action === 'active_cards') {
         $stmt = $pdo->query("
         SELECT 
@@ -84,7 +97,6 @@ try {
     ");
         $cards = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Formatiere die Abo-Prüfung zu einem echten boolean für React (true/false)
         foreach ($cards as &$card) {
             $card['hasActiveAbo'] = (bool)$card['hasActiveAbo'];
         }
@@ -92,12 +104,11 @@ try {
         exit;
     }
 
-    // Fehler-Rückgabe, falls keine oder eine falsche Action aufgerufen wurde
     http_response_code(400);
-    echo json_encode(['error' => 'Ungültige Aktion. Erwartet: ?action=pending oder ?action=active_cards']);
+    echo json_encode(['error' => 'Ungültige Aktion.']);
 
 } catch (\Throwable $e) {
     http_response_code(500);
     error_log("Mensa Teacher API Error [data.php]: " . $e->getMessage());
-    echo json_encode(['error' => 'Serverfehler: ' . $e->getMessage()]);
+    echo json_encode(['error' => 'Serverfehler aufgetreten.']);
 }

@@ -1,7 +1,16 @@
 <?php
 // actions.php - API Endpoint zum Ausführen von Aktionen (Lehrer-Interface)
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+
+// --- 1. SICHERE CORS KONFIGURATION ---
+$allowed_origins = [
+    'https://lehrer.mensamanager.de'
+];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowed_origins)) {
 header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: " . $allowed_origins[0]);
+}
 header('Access-Control-Allow-Credentials: true');
 header('Content-Type: application/json');
 header('Access-Control-Allow-Methods: POST, OPTIONS');
@@ -20,7 +29,15 @@ if (file_exists($_SERVER['DOCUMENT_ROOT'] . "/api/functions.inc.php")) {
     require_once($_SERVER['DOCUMENT_ROOT'] . "/api/functions.inc.php");
 }
 
-// --- AUTHENTIFIZIERUNG ---
+// --- 2. SICHERES SESSION MANAGEMENT ---
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '', 
+    'secure' => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on',
+    'httponly' => true,
+    'samesite' => 'Strict'
+]);
 session_name("mensa_login");
 session_start();
 
@@ -37,7 +54,6 @@ if (isset($_SESSION['userid'])) {
     }
 }
 
-// Cookie/Token Fallback
 if (!$isAuthorized && isset($_COOKIE['identifier']) && isset($_COOKIE['securitytoken'])) {
     $stmt = $pdo->prepare("SELECT u.id, u.status, s.securitytoken FROM securitytokens s JOIN users u ON s.user_id = u.id WHERE s.identifier = ?");
     $stmt->execute([$_COOKIE['identifier']]);
@@ -62,7 +78,6 @@ $action = $_POST['action'] ?? '';
 try {
     switch ($action) {
         
-        // --- 1. KARTE AUSGEBEN (Aus deinem Admin-Code übernommen) ---
         case 'assignCardNumber':
             $cardIdStr = $_POST['cardId'] ?? '';
             $cardNumber = $_POST['cardNumber'] ?? '';
@@ -72,7 +87,6 @@ try {
                 throw new \Exception('Fehlende Parameter (Schüler oder Kartennummer).');
             }
 
-            // Prüfen ob Karte schon vergeben (Optionaler Extraschutz)
             $stmt = $pdo->prepare("SELECT card_id FROM chip_cards WHERE card_uid = ? AND active = 1");
             $stmt->execute([$cardNumber]);
             if($stmt->fetch()) {
@@ -88,7 +102,6 @@ try {
             if (strpos($cardIdStr, 'pending_') === 0) {
                 $holderId = (int) str_replace('pending_', '', $cardIdStr);
                 
-                // Finde die account_id heraus (Elternkonto)
                 $stmt = $pdo->prepare("SELECT created_by FROM card_holders WHERE holder_id = ?");
                 $stmt->execute([$holderId]);
                 $accountId = $stmt->fetchColumn();
@@ -125,13 +138,11 @@ try {
             }
             break;
 
-        // --- 2. KARTE EINSAMMELN ---
         case 'collectCard':
             $cardIdStr = $_POST['cardId'] ?? '';
             $studentIdStr = $_POST['studentId'] ?? '';
             $deleteStudent = !empty($_POST['deleteStudent']);
             
-            // IDs bereinigen, falls Präfixe mitgeschickt werden (z.B. 'c1', 's2')
             $cardId = (int) str_replace('c', '', $cardIdStr);
             $studentId = (int) str_replace('s', '', $studentIdStr);
 
@@ -141,38 +152,33 @@ try {
 
             $pdo->beginTransaction();
 
-            // 1. Account-ID der Karte ermitteln (für die Rückerstattung)
-            $stmt = $pdo->prepare("SELECT account_id FROM chip_cards WHERE card_id = ?");
+            // --- SICHERHEIT: RACE CONDITION SCHUTZ (FOR UPDATE) ---
+            // Sperrt diese Zeile in der Datenbank, bis die Transaktion abgeschlossen ist.
+            // Verhindert doppelte Ausführung von Pfand-Rückerstattungen bei Doppel-Klicks.
+            $stmt = $pdo->prepare("SELECT account_id FROM chip_cards WHERE card_id = ? FOR UPDATE");
             $stmt->execute([$cardId]);
             $accountId = $stmt->fetchColumn();
 
             if ($accountId) {
-                // 2. Aktuellen Pfand-Wert aus den Settings holen
                 $stmt = $pdo->query("SELECT def_value FROM default_values WHERE name = 'card_deposit'");
                 $depositAmount = (float) $stmt->fetchColumn();
 
                 if ($depositAmount > 0) {
-                    // 3. Balance auf dem Eltern-Account erhöhen
                     $stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?");
                     $stmt->execute([$depositAmount, $accountId]);
 
-                    // 4. Transaktion "Pfand zurückerstattet" eintragen
                     $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at) VALUES (?, ?, 'REFUND', 'Kartenpfand zurückerstattet', NOW())");
                     $stmt->execute([$accountId, $depositAmount]);
                 }
             }
 
-            // Karte löschen
             $stmt = $pdo->prepare("DELETE FROM chip_cards WHERE card_id = ?");
             $stmt->execute([$cardId]);
 
-            // 6. Falls $deleteStudent == true ist (Schüler hat keine aktiven Abos mehr)
             if ($deleteStudent) {
-                // Lösche alle eventuell noch vorhandenen abgelaufenen Abos dieses Schülers
                 $stmt = $pdo->prepare("DELETE FROM subscriptions WHERE holder_id = ?");
                 $stmt->execute([$studentId]);
 
-                // Lösche den Schüler (Holder) aus der Datenbank
                 $stmt = $pdo->prepare("DELETE FROM card_holders WHERE holder_id = ?");
                 $stmt->execute([$studentId]);
             }

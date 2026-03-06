@@ -1,79 +1,82 @@
 
-# 🎓 Backend-Dokumentation: Lehrerinterface
+# 🛡️ Backend-Dokumentation: Lehrerinterface (API & Sicherheit)
 
-Dieses Dokument beschreibt die Architektur und die API für das Personal an der Essensausgabe und im Sekretariat. Diese API (`teacher_actions.php`) ist minimal gehalten und stark in ihren Rechten beschnitten.
+Das Backend des Lehrerinterfaces besteht aus drei hochspezialisierten PHP-Endpunkten (`login.php`, `data.php`, `actions.php`). Diese Architektur ist streng nach dem Prinzip "Security by Design" aufgebaut und schützt sensible Finanz- und Schülerdaten vor Angriffen (OWASP Top 10).
 
-## 1. Architektur & Sicherheit (Teacher API)
+## 1. Sicherheitsarchitektur (Security by Design)
 
-Das Lehrerinterface ist physisch auf Endgeräte in der Schule beschränkt bzw. durch spezifische Rollen gesichert.
+Jeder API-Endpunkt erzwingt vor der Ausführung der Logik folgende Sicherheitsstandards:
 
-### 1.1 Rollenbasierte Zugriffskontrolle (RBAC)
+### 1.1 Strikte CORS-Konfiguration (Cross-Origin Resource Sharing)
 
-Ein eingeloggter User muss zwingend über die Rolle `teacher` oder `card_issuer` verfügen. Die API blockiert Aufrufe von normalen Eltern-Accounts:
+Es werden keine Wildcards (`*`) akzeptiert. Die API gleicht den `HTTP_ORIGIN` gegen ein hartkodiertes Array (`$allowed_origins`) ab. Nur exakt definierte Schul-Domains dürfen mit der API kommunizieren. Dies verhindert das Auslesen von Daten durch bösartige Dritt-Webseiten.
 
-```
-if ($_SESSION['role'] !== 'teacher' && $_SESSION['role'] !== 'admin') {
-    http_response_code(403);
-    exit(json_encode(['error' => 'Keine Berechtigung zur Kartenausgabe.']));
-}
+### 1.2 Modernes Session- & Cookie-Management
 
-```
-
-### 1.2 Verhinderung von Pfand-Betrug (Refund-Lock)
-
-Beim Einsammeln von Karten wird das Kartenpfand automatisch an die Eltern zurückerstattet. Die API prüft strikt, ob die zurückgegebene Karte den Status `Aktiv` hatte. Eine Karte kann nicht zweimal "eingesammelt" werden, um mehrfach Pfand zu generieren.
-
-## 2. API Endpunkte (Teacher)
-
-Die API für Lehrkräfte beschränkt sich primär auf das Auslesen von Schülerprofilen und das Zuordnen/Trennen von Chipkarten (Hardware-IDs).
-
-### 2.1 Kartenausgabe
-
--   `GET /api/teacher_actions.php?action=getPendingCards`
+-   **HttpOnly:** Cookies können nicht durch JavaScript (XSS-Angriffe) ausgelesen werden.
     
-    -   **Funktion:** Liefert eine Liste aller Schüler (`card_holders`), für die im Userportal ein Profil oder eine Ersatzkarte bestellt, aber noch keine physische Karte zugewiesen wurde.
-        
--   `POST /api/teacher_actions.php?action=assignCard`
+-   **Secure:** Sessions werden ausschließlich über verschlüsselte HTTPS-Verbindungen gesendet.
     
-    -   **Payload:** `holderId` (Schüler-ID), `chipUid` (Gescannter Hardware-Code der RFID-Karte)
-        
-    -   **Funktion:** Prüft, ob die `chipUid` noch frei ist. Verknüpft die Karte mit dem Schüler und setzt den Status auf `Aktiv` (`active = 1`, `issued_at = NOW()`).
-        
-
-### 2.2 Kartenrücknahme
-
--   `POST /api/teacher_actions.php?action=returnCard`
+-   **SameSite=Strict:** Der Browser sendet Session-Cookies nur, wenn die Anfrage direkt von der Schul-Domain kommt. Dies blockiert Cross-Site Request Forgery (CSRF) zu 100%.
     
-    -   **Payload:** `chipUid` (Gescannter Hardware-Code der zurückgegebenen Karte)
-        
-    -   **Funktion (Atomare Transaktion):**
-        
-        1.  Liest den Besitzer der Karte aus.
-            
-        2.  Hebt die Verknüpfung auf (Löscht den Datensatz in `chip_cards` oder setzt `active = 0`).
-            
-        3.  Ermittelt den `account_id` der Eltern.
-            
-        4.  Bucht den in `default_values` hinterlegten Kartenpfand (z.B. 5,00 €) als `REFUND` auf das Familienguthaben in `accounts` zurück.
-            
-        5.  Erzeugt ein Audit-Log in `account_transactions` mit der ID der ausführenden Lehrkraft.
-            
 
-### 2.3 Essensausgabe (Terminal-Validierung)
+### 1.3 Schutz vor Session-Fixation
 
--   `POST /api/teacher_actions.php?action=validateMeal`
+Bei jedem erfolgreichen Login wird zwingend `session_regenerate_id(true);` aufgerufen. Einem Angreifer, der dem Opfer zuvor eine manipulierte Session-ID unterjubeln wollte, wird dadurch die Grundlage entzogen.
+
+### 1.4 SQL-Injection Prävention
+
+Sämtliche Datenbankinteraktionen erfolgen ausnahmslos über **PDO Prepared Statements** (`$pdo->prepare()`). Parameter werden strikt vom SQL-Code getrennt ausgeführt.
+
+### 1.5 Race-Condition & Transaktions-Schutz
+
+Beim Einsammeln von Karten (Pfandrückerstattung) wird `$pdo->beginTransaction()` genutzt. _Entscheidendes Feature:_ Der SQL-Befehl nutzt **`FOR UPDATE`** (`SELECT ... FOR UPDATE`). Dies sperrt die betroffene Datenbankzeile für den Bruchteil einer Sekunde. Ein durch schlechtes Internet verursachter "Doppel-Klick" des Lehrers kann somit niemals zu einer doppelten Auszahlung des Kartenpfands führen.
+
+## 2. API Endpunkte
+
+### 2.1 Authentifizierung (`/api/login.php`)
+
+-   **GET `?check=1`:** Prüft, ob eine gültige Session oder ein gültiges "Angemeldet bleiben"-Cookie (Security-Token) existiert. Erneuert bei Cookie-Logins direkt die Session-ID.
     
-    -   **Payload:** `chipUid`
+-   **POST:** Verarbeitet den Login.
+    
+    -   Prüft hCaptcha via serverseitigem POST-Request.
         
-    -   **Funktion:** Wird aufgerufen, wenn ein Schüler die Karte an das Terminal in der Mensa hält.
+    -   Sichert gegen Brute-Force: Sperrt die IP-Adresse für 15 Minuten, wenn mehr als 5 Fehlversuche (`login_attempts`) registriert wurden.
         
-    -   **Logik:**
+    -   Verifiziert das Passwort via `password_verify` und prüft zwingend auf die Rollen `TEACHER` oder `ADMIN`.
         
-        1.  Prüft, ob die Karte existiert und `Aktiv` ist.
-            
-        2.  Prüft, ob für den heutigen Wochentag (z.B. Dienstag) ein gültiges Abo in `subscriptions` existiert. Falls ja: Rückgabe `Zulassung erteilt (Abo)`.
-            
-        3.  Falls kein Abo existiert: Prüft, ob das Guthaben der Eltern in `accounts` ausreicht, um den regulären Essenspreis zu bezahlen. Falls ja: Zieht Guthaben ab und gibt `Zulassung erteilt (Prepaid)` zurück. Falls nein: `Abgelehnt (Guthaben leer)`.
-            
+
+### 2.2 Datenabruf (`/api/data.php`)
+
+Liest die Schülerlisten aus. Verwendet `LEFT JOIN` für Elterndaten, um zu garantieren, dass Schüler auch dann angezeigt werden, wenn das verknüpfte Elternkonto beschädigt/gelöscht ist.
+
+-   **GET `?action=pending`:** Gibt alle Schüler (`card_holders`) zurück, die keinen Eintrag in `chip_cards` haben.
+    
+-   **GET `?action=active_cards`:** Gibt alle Schüler mit aktiver Karte zurück.
+    
+    -   _Sub-Query Feature:_ Enthält eine verschachtelte SQL-Abfrage, die in Echtzeit berechnet, ob der Schüler ein noch in der Zukunft endendes Abonnement besitzt (`hasActiveAbo` = Boolean).
+        
+
+### 2.3 Aktions-Ausführung (`/api/actions.php`)
+
+-   **POST `action=assignCardNumber`:** - Prüft, ob die `cardNumber` (UID) bereits vergeben ist.
+    
+    -   Konvertiert das Base64-Gesichtsfoto (`faceData`) in ein Binary-BLOB und speichert es in `card_holders`.
+        
+    -   Verknüpft die neue `card_uid`, die `account_id` der Eltern und die `holder_id` des Schülers in der Tabelle `chip_cards`.
+        
+-   **POST `action=collectCard`:**
+    
+    -   Startet eine Transaktion mit `FOR UPDATE`-Sperre auf die Karte.
+        
+    -   Ermittelt die `account_id` und den aktuellen Pfandwert aus `default_values`.
+        
+    -   Bucht das Pfand als Guthaben auf den Eltern-Account (`accounts`) und schreibt ein Audit-Log in `account_transactions` (Typ: `REFUND`).
+        
+    -   Löscht die Karte aus `chip_cards`.
+        
+    -   Falls der Parameter `deleteStudent=1` gesetzt ist: Löscht zusätzlich alle alten Abos (`subscriptions`) und den Schüler (`card_holders`) komplett aus dem System.
+
 
 🔙 [Zurück zur Hauptseite](/docs/README.md)
