@@ -20,12 +20,15 @@ if ($userId > 0) {
 }
 
 $identifier = $_COOKIE['identifier'] ?? null;
-mm_logout_user($pdo, $userId, $identifier, [
+$allPossibleSessions = [
     'mensa_login',
     'mensa_portal_login',
     'mensa_admin_login',
     'mensa_teacher_login',
-    'PHPSESSID',
-]);
+    'PHPSESSID'
+];
+$sessionsToDelete = array_values(array_intersect($allPossibleSessions, array_keys($_COOKIE)));
+
+mm_logout_user($pdo, $userId, $identifier, $sessionsToDelete);
 
 mm_json_response(['success' => true]);

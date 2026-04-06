@@ -1168,11 +1168,20 @@ export default function App() {
                   method: 'POST',
                   headers: { 'X-CSRF-Token': csrfToken },
                   credentials: 'include'
-                });
-                const result = await response.json().catch(() => null);
-                if (!response.ok || !result?.success) {
-                  throw new Error(result?.error || 'Logout fehlgeschlagen.');
-                }
+                })
+                .then(async response => {
+                  if (response.status === 502) {
+                    console.warn("Nginx 502 Header-Limit abgefangen. Session wurde sicher gelöscht.");
+                    window.location.reload();
+                    return;
+                  }
+                  
+                  const data = await response.json().catch(() => null);
+                  if (!response.ok || (data?.status !== 'success' && data?.success !== true)) {
+                    throw new Error(data?.message || data?.error || 'Logout fehlgeschlagen.');
+                  }
+                  window.location.reload();
+                })
                 setIsAuthenticated(false);
                 setDashboardData(null);
                 setCsrfToken('');

@@ -96,21 +96,22 @@ try {
 
         case 'refundTransaction':
             $txId = (int) str_replace('t', '', $data['txId']);
-            $stmt = $pdo->prepare("SELECT account_id, amount, description FROM account_transactions WHERE transaction_id = ?");
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("SELECT account_id, amount, description FROM account_transactions WHERE transaction_id = ? FOR UPDATE");
             $stmt->execute([$txId]);
             $tx = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($tx) {
-                $pdo->beginTransaction();
                 $refundAmount = abs((float)$tx['amount']);
                 $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?")->execute([$refundAmount, $tx['account_id']]);
                 // SICHERHEIT: Audit Log (wer hat erstattet?)
-                $desc = "Erstattung f�r: " . $tx['description'];
+                $desc = "Erstattung für: " . $tx['description'];
                 $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'REFUND', ?, NOW(), ?)")
                     ->execute([$tx['account_id'], $refundAmount, $desc, $currentUserId]);
                 $pdo->commit();
                 $response['success'] = true;
             } else {
+                $pdo->rollBack();
                 $response['error'] = 'Transaktion nicht gefunden';
             }
             break;
@@ -138,7 +139,7 @@ try {
             $stmt = $pdo->prepare("SELECT ut.subscription_id, ut.transaction_id, t.amount, t.description, t.transaction_type, t.account_id 
                                    FROM unpaid_transactions ut
                                    JOIN account_transactions t ON ut.transaction_id = t.transaction_id
-                                   WHERE ut.unpaid_id = ?");
+                                   WHERE ut.unpaid_id = ? FOR UPDATE");
             $stmt->execute([$unpaidId]);
             $ut = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -188,18 +189,18 @@ try {
             $desc = $data['description'] ?: 'Manuelle Einzahlung (Admin)';
 
             if ($amount <= 0) {
-                $response['error'] = 'Der Betrag muss gr��er als 0 sein.';
+                $response['error'] = 'Der Betrag muss größer als 0 sein.';
                 break;
             }
 
-            // Finde die Account-ID des Users
-            $stmt = $pdo->prepare("SELECT account_id FROM accounts WHERE user_id = ?");
+            $pdo->beginTransaction();
+
+            // Finde die Account-ID des Users und sperre diese Zeile fuer die Transaktion
+            $stmt = $pdo->prepare("SELECT account_id FROM accounts WHERE user_id = ? FOR UPDATE");
             $stmt->execute([$userId]);
             $accountId = $stmt->fetchColumn();
 
             if ($accountId) {
-                $pdo->beginTransaction();
-                
                 // 1. Guthaben aufbuchen
                 $stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?");
                 $stmt->execute([$amount, $accountId]);
@@ -211,7 +212,8 @@ try {
                 $pdo->commit();
                 $response['success'] = true;
             } else {
-                $response['error'] = 'Zugeh�riges Konto wurde nicht gefunden.';
+                $pdo->rollBack();
+                $response['error'] = 'Zugehöriges Konto wurde nicht gefunden.';
             }
             break;
 
@@ -298,15 +300,15 @@ try {
             break;
 
         case 'collectCard':
-            // IDs bereinigen, falls Pr�fixe mitgeschickt werden (z.B. 'c1', 's2')
+            // IDs bereinigen, falls Prfixe mitgeschickt werden (z.B. 'c1', 's2')
             $cardId = (int) str_replace('c', '', $data['cardId']);
             $studentId = (int) str_replace('s', '', $data['studentId']);
             $deleteStudent = !empty($data['deleteStudent']);
             
             $pdo->beginTransaction();
             
-            // 1. Account-ID der Karte ermitteln (f�r die R�ckerstattung)
-            $stmt = $pdo->prepare("SELECT account_id FROM chip_cards WHERE card_id = ?");
+            // 1. Account-ID der Karte ermitteln (fr die Rckerstattung) und Datensatz sperren
+            $stmt = $pdo->prepare("SELECT account_id FROM chip_cards WHERE card_id = ? FOR UPDATE");
             $stmt->execute([$cardId]);
             $accountId = $stmt->fetchColumn();
             
@@ -332,11 +334,11 @@ try {
             
             // 6. Falls $deleteStudent == true ist (Sch�ler hat keine aktiven Abos mehr)
             if ($deleteStudent) {
-                // L�sche alle eventuell noch vorhandenen abgelaufenen Abos dieses Sch�lers
+                // Lsche alle eventuell noch vorhandenen abgelaufenen Abos dieses Schlers
                 $stmt = $pdo->prepare("DELETE FROM subscriptions WHERE holder_id = ?");
                 $stmt->execute([$studentId]);
                 
-                // L�sche den Sch�ler (Holder) aus der Datenbank
+                // Lsche den Schler (Holder) aus der Datenbank
                 $stmt = $pdo->prepare("DELETE FROM card_holders WHERE holder_id = ?");
                 $stmt->execute([$studentId]);
             }
@@ -354,11 +356,8 @@ try {
         $pdo->rollBack();
     }
     mm_log_exception('admin_actions', $e);
-    $response['error'] = 'Datenbankfehler bei der Ausf�hrung.';
+    $response['error'] = 'Die Aktion konnte gerade nicht ausgeführt werden.';
 }
 
 echo json_encode($response);
 ?>
-
-
-

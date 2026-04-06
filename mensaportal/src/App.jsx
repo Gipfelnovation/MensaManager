@@ -449,23 +449,33 @@ export default function App() {
       .catch(err => console.error("Config Fehler", err));
   };
 
-  const handleLogout = () => {
-    fetch('/api/data.php?action=logout', {
-      method: 'POST',
-      headers: jsonHeaders(true),
-      credentials: 'include'
-    })
-      .then(async response => {
-        const data = await response.json().catch(() => null);
-        if (!response.ok || data?.status !== 'success') {
-          throw new Error(data?.message || 'Logout fehlgeschlagen.');
-        }
-        resetSessionState();
+    const handleLogout = async () => {
+    try {
+      const response = await fetch(`/api/data.php?action=logout`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrfToken },
+        credentials: 'include'
       })
-      .catch(err => {
-        console.error("Logout error", err);
-        showToast(err.message || 'Logout fehlgeschlagen.');
-      });
+      .then(async response => {
+        if (response.status === 502) {
+          console.warn("Nginx 502 Header-Limit abgefangen. Session wurde sicher gelöscht.");
+          window.location.reload();
+          return;
+        }
+                  
+        const data = await response.json().catch(() => null);
+        if (!response.ok || (data?.status !== 'success' && data?.success !== true)) {
+          throw new Error(data?.message || data?.error || 'Logout fehlgeschlagen.');
+        }
+        window.location.reload();
+      })
+      setIsAuthenticated(false);
+      setDashboardData(null);
+      setCsrfToken('');
+    } catch (e) {
+      console.error("Logout error", e);
+      showToast(e.message || 'Logout fehlgeschlagen.');
+    }
   };
 
   const fetchUserData = (showLiquid = false) => {

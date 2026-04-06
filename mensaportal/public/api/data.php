@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/../../../shared/php/mm_security.php';
+require_once __DIR__ . '/../../shared/php/mm_security.php';
 
 mm_apply_cors('portal', ['GET', 'POST', 'OPTIONS'], ['Content-Type', 'X-CSRF-Token']);
 mm_start_session('mensa_portal_login');
@@ -250,7 +250,6 @@ if ($action === 'register') {
 
 if ($action === 'logout') {
     portal_require_method('POST');
-    $userId = portal_get_session_user_id();
 
     if ($userId > 0) {
         try {
@@ -264,13 +263,16 @@ if ($action === 'logout') {
     }
 
     $identifier = $_COOKIE['identifier'] ?? null;
-    mm_logout_user($pdo, $userId, $identifier, [
-        'mensa_portal_login',
+    $allPossibleSessions = [
         'mensa_login',
+        'mensa_portal_login',
         'mensa_admin_login',
         'mensa_teacher_login',
-        'PHPSESSID',
-    ]);
+        'PHPSESSID'
+    ];
+    $sessionsToDelete = array_values(array_intersect($allPossibleSessions, array_keys($_COOKIE)));
+
+    mm_logout_user($pdo, $userId, $identifier, $sessionsToDelete);
     mm_json_response(['status' => 'success']);
 }
 

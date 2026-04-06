@@ -215,6 +215,8 @@ if (empty($captchaResponse)) {
             $stmt = $pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
             $stmt->execute([$ip_address]);
 
+            session_regenerate_id(true);
+
             $_SESSION['pending_2fa_userid'] = $user['id'];
 
         // Prüfen, ob 2FA eingerichtet ist
