@@ -1,423 +1,492 @@
 <?php
-// --- 1. SITZUNGSSICHERHEIT (Cookies härten) ---
-ini_set('session.cookie_httponly', 1);
-ini_set('session.cookie_secure', 1);
-ini_set('session.cookie_samesite', 'Strict');
-ini_set('session.use_strict_mode', 1);
 
-session_name("mensa_login");
+require_once __DIR__ . '/../../../shared/php/mm_security.php';
 
-// --- 2. CORS EINSCHRÄNKUNG (Strikte Whitelist) ---
-$allowedOrigins = [
-    'https://www.mensamanager.de',
-    'https://mensamanager.de'
-];
-
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-if (in_array($origin, $allowedOrigins)) {
-    header("Access-Control-Allow-Origin: $origin");
-} else {
-    header("Access-Control-Allow-Origin: https://www.mensamanager.de");
-}
-
-header("Access-Control-Allow-Credentials: true");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
-header('Content-Type: application/json; charset=utf-8');
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    exit(0);
-}
-
-session_start();
-
-require_once('db-connect.php');
-
-$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
-$options = [
-    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES   => false,
-];
+mm_apply_cors('portal', ['GET', 'POST', 'OPTIONS'], ['Content-Type', 'X-CSRF-Token']);
+mm_start_session('mensa_portal_login');
 
 try {
-    $pdo = new PDO($dsn, $user, $pass, $options);
-} catch (\PDOException $e) {
-    echo json_encode(['status' => 'error', 'message' => 'Datenbankverbindung fehlgeschlagen.']);
-    exit;
+    $pdo = mm_build_pdo();
+} catch (Throwable $exception) {
+    mm_log_exception('portal_data_bootstrap', $exception);
+    mm_json_response([
+        'status' => 'error',
+        'message' => 'Die Daten konnten gerade nicht geladen werden.',
+    ], 500);
 }
 
-$input = json_decode(file_get_contents('php://input'), true);
-$action = $_GET['action'] ?? ($input['action'] ?? '');
+function portal_data_input()
+{
+    static $input = null;
 
-// ==========================================
-// ÖFFENTLICHE ENDPUNKTE (Kein Login nötig)
-// ==========================================
+    if ($input !== null) {
+        return $input;
+    }
+
+    $decoded = json_decode(file_get_contents('php://input'), true);
+    $input = is_array($decoded) ? $decoded : [];
+
+    return $input;
+}
+
+function portal_require_method($method)
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== $method) {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Methode nicht erlaubt.',
+        ], 405);
+    }
+}
+
+function portal_get_session_user_id()
+{
+    return isset($_SESSION['userid']) ? (int) $_SESSION['userid'] : 0;
+}
+
+function portal_require_logged_in_user_id()
+{
+    $userId = portal_get_session_user_id();
+    if ($userId <= 0) {
+        mm_json_response([
+            'status' => 'unauthorized',
+            'message' => 'Bitte einloggen.',
+        ], 401);
+    }
+
+    return $userId;
+}
+
+$input = portal_data_input();
+$action = (string) ($_GET['action'] ?? ($input['action'] ?? ''));
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['config'])) {
+    mm_json_response([
+        'status' => 'success',
+        'captchaSiteKey' => mm_get_hcaptcha_site_key(),
+        'paypalClientId' => mm_get_paypal_client_id(),
+    ]);
+}
 
 if ($action === 'getLegalContent') {
-    $type = $_GET['type'] ?? '';
+    portal_require_method('GET');
+
+    $type = (string) ($_GET['type'] ?? '');
     $dbKey = '';
-    
-    if ($type === 'imprint') $dbKey = 'imprint';
-    elseif ($type === 'privacy') $dbKey = 'privacy';
-    else {
-        echo json_encode(['status' => 'error', 'message' => 'Ungültiger Typ angefordert.']);
-        exit;
+
+    if ($type === 'imprint') {
+        $dbKey = 'imprint';
+    } elseif ($type === 'privacy') {
+        $dbKey = 'privacy';
+    } else {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Ungueltiger Typ angefordert.',
+        ], 400);
     }
 
-    $stmt = $pdo->prepare("SELECT def_value FROM default_values WHERE name = ?");
-    $stmt->execute([$dbKey]);
-    $res = $stmt->fetch();
+    $statement = $pdo->prepare('SELECT def_value FROM default_values WHERE name = ?');
+    $statement->execute([$dbKey]);
+    $result = $statement->fetch(PDO::FETCH_ASSOC);
 
-    echo json_encode([
+    mm_json_response([
         'status' => 'success',
-        'content' => $res ? $res['def_value'] : 'Inhalt wurde noch nicht hinterlegt.'
+        'content' => $result ? $result['def_value'] : 'Inhalt wurde noch nicht hinterlegt.',
     ]);
-    exit;
 }
 
-// ==========================================
-// AUTHENTIFIZIERUNG (Login, Register, Logout)
-// ==========================================
-
 if ($action === 'login') {
-    $email = trim($input['email'] ?? '');
-    $password = $input['passwort'] ?? '';
-    $captchaToken = $input['captchaToken'] ?? '';
+    portal_require_method('POST');
 
-    if (empty($email) || empty($password)) {
-        echo json_encode(['status' => 'error', 'message' => 'Bitte alle Felder ausfüllen.']);
-        exit;
+    $email = trim((string) ($input['email'] ?? ''));
+    $password = (string) ($input['passwort'] ?? '');
+    $captchaToken = (string) ($input['captchaToken'] ?? '');
+
+    if ($email === '' || $password === '') {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Bitte alle Felder ausfuellen.',
+        ], 400);
     }
 
-    if (empty($captchaToken)) {
-        echo json_encode(['status' => 'error', 'message' => 'Bitte bestätige, dass du ein Mensch bist (Captcha).']);
-        exit;
+    if ($captchaToken === '') {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Bitte bestaetige, dass du ein Mensch bist (Captcha).',
+        ], 400);
     }
 
-    $max_attempts = 5;               // Maximale Fehlversuche
-    $lockout_time = 15;              // Sperrzeit in Minuten
-    $hcaptcha_secret = '***REMOVED***';
-    $ip_address = $_SERVER['REMOTE_ADDR'];
+    $maxAttempts = 5;
+    $lockoutTime = 15;
+    $ipAddress = mm_get_real_ip();
 
-    // 1. Alte (abgelaufene) Login-Versuche bereinigen
-    $pdo->query("DELETE FROM login_attempts WHERE last_attempt < (NOW() - INTERVAL $lockout_time MINUTE)");
+    $pdo->query("DELETE FROM login_attempts WHERE last_attempt < (NOW() - INTERVAL $lockoutTime MINUTE)");
 
-    // 2. Prüfen, ob die IP aktuell gesperrt ist
-    $stmt = $pdo->prepare("SELECT attempts FROM login_attempts WHERE ip_address = ?");
-    $stmt->execute([$ip_address]);
-    $attempts = $stmt->fetchColumn();
+    $attemptStatement = $pdo->prepare('SELECT attempts FROM login_attempts WHERE ip_address = ?');
+    $attemptStatement->execute([$ipAddress]);
+    $attempts = $attemptStatement->fetchColumn();
 
-    if ($attempts !== false && $attempts >= $max_attempts) {
-        http_response_code(429);
-        echo json_encode(['status' => 'error', 'message' => 'Zu viele fehlgeschlagene Logins. Bitte warte ' . $lockout_time . ' Minuten.']);
-        exit;
+    if ($attempts !== false && (int) $attempts >= $maxAttempts) {
+        mm_json_response([
+            'status' => 'error',
+            'message' => "Zu viele fehlgeschlagene Logins. Bitte warte $lockoutTime Minuten.",
+        ], 429);
     }
 
-    // 3. hCaptcha verifizieren
-    $verifyResponse = file_get_contents('https://hcaptcha.com/siteverify', false, stream_context_create([
-        'http' => [
-            'header' => "Content-type: application/x-www-form-urlencoded\r\n",
-            'method' => 'POST',
-            'content' => http_build_query([
-                'secret' => $hcaptcha_secret,
-                'response' => $captchaToken,
-                'remoteip' => $ip_address
-            ])
-        ]
-    ]));
-    
-    $responseData = json_decode($verifyResponse);
-    if (!$responseData || !$responseData->success) {
-        echo json_encode(['status' => 'error', 'message' => 'Captcha-Verifizierung fehlgeschlagen. Bitte versuche es erneut.']);
-        exit;
-    }
-
-    // 4. Benutzer prüfen
-    $stmt = $pdo->prepare("SELECT id, passwort FROM users WHERE email = ?");
-    $stmt->execute([$email]);
-    $userRow = $stmt->fetch();
-
-    // PW-Verifizierung (Voraussetzung: Passwörter sind mit password_hash() gespeichert!)
-    if ($userRow && password_verify($password, $userRow['passwort'])) {
-        // Erfolgreicher Login: Brute-Force Zähler zurücksetzen
-        $stmt = $pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
-        $stmt->execute([$ip_address]);
-
-        // SICHERHEIT: Session-Fixation Schutz! Alte Session verwerfen, neue ID generieren.
-        session_regenerate_id(true);
-        $_SESSION['userid'] = $userRow['id'];
-        
-        echo json_encode(['status' => 'success']);
-    } else {
-        // Fehlgeschlagener Login: Zähler erhöhen
-        if ($attempts === false) {
-            $stmt = $pdo->prepare("INSERT INTO login_attempts (ip_address, attempts, last_attempt) VALUES (?, 1, NOW())");
-            $stmt->execute([$ip_address]);
-        } else {
-            $stmt = $pdo->prepare("UPDATE login_attempts SET attempts = attempts + 1, last_attempt = NOW() WHERE ip_address = ?");
-            $stmt->execute([$ip_address]);
+    try {
+        if (!mm_verify_hcaptcha_token($captchaToken, $ipAddress)) {
+            mm_json_response([
+                'status' => 'error',
+                'message' => 'Captcha-Verifizierung fehlgeschlagen. Bitte versuche es erneut.',
+            ], 400);
         }
-        
-        // SICHERHEIT: Anti-Brute-Force (Künstliche Verzögerung bei falschem Login)
-        sleep(1); 
-        echo json_encode(['status' => 'error', 'message' => 'E-Mail oder Passwort falsch.']);
+    } catch (MmConfigurationException $exception) {
+        mm_log_exception('portal_hcaptcha_configuration', $exception);
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Die Anmeldung ist momentan nicht verfuegbar.',
+        ], 500);
     }
-    exit;
+
+    $userStatement = $pdo->prepare('SELECT id, passwort FROM users WHERE email = ?');
+    $userStatement->execute([$email]);
+    $userRow = $userStatement->fetch(PDO::FETCH_ASSOC);
+
+    if ($userRow && password_verify($password, (string) $userRow['passwort'])) {
+        $clearStatement = $pdo->prepare('DELETE FROM login_attempts WHERE ip_address = ?');
+        $clearStatement->execute([$ipAddress]);
+
+        session_regenerate_id(true);
+        $_SESSION['userid'] = (int) $userRow['id'];
+
+        mm_json_response([
+            'status' => 'success',
+            'csrfToken' => mm_get_csrf_token(),
+        ]);
+    }
+
+    $recordFailure = $pdo->prepare(
+        'INSERT INTO login_attempts (ip_address, attempts, last_attempt)
+         VALUES (?, 1, NOW())
+         ON DUPLICATE KEY UPDATE attempts = attempts + 1, last_attempt = NOW()'
+    );
+    $recordFailure->execute([$ipAddress]);
+
+    sleep(1);
+
+    mm_json_response([
+        'status' => 'error',
+        'message' => 'E-Mail oder Passwort falsch.',
+    ], 401);
 }
 
 if ($action === 'register') {
-    $vorname = htmlspecialchars(strip_tags(trim($input['vorname'] ?? '')));
-    $nachname = htmlspecialchars(strip_tags(trim($input['nachname'] ?? '')));
-    $email = trim($input['email'] ?? '');
-    $passwort = $input['passwort'] ?? '';
-    $passwort2 = $input['passwort2'] ?? '';
+    portal_require_method('POST');
+
+    $firstName = htmlspecialchars(strip_tags(trim((string) ($input['vorname'] ?? ''))), ENT_QUOTES, 'UTF-8');
+    $lastName = htmlspecialchars(strip_tags(trim((string) ($input['nachname'] ?? ''))), ENT_QUOTES, 'UTF-8');
+    $email = trim((string) ($input['email'] ?? ''));
+    $password = (string) ($input['passwort'] ?? '');
+    $passwordRepeat = (string) ($input['passwort2'] ?? '');
 
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        echo json_encode(['status' => 'error', 'message' => 'Ungültige E-Mail Adresse.']);
-        exit;
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Ungueltige E-Mail Adresse.',
+        ], 400);
     }
-    
+
     $passwordRegex = '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/';
-    if (!preg_match($passwordRegex, $passwort)) {
-        echo json_encode(['status' => 'error', 'message' => 'Das Passwort muss mind. 8 Zeichen, Groß-/Kleinbuchstaben, Zahlen und Sonderzeichen enthalten.']);
-        exit;
+    if (!preg_match($passwordRegex, $password)) {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Das Passwort muss mind. 8 Zeichen, Gross-/Kleinbuchstaben, Zahlen und Sonderzeichen enthalten.',
+        ], 400);
     }
 
-    if ($passwort !== $passwort2) {
-        echo json_encode(['status' => 'error', 'message' => 'Passwörter stimmen nicht überein.']);
-        exit;
+    if ($password !== $passwordRepeat) {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Passwoerter stimmen nicht ueberein.',
+        ], 400);
     }
 
-    // Prüfen ob E-Mail existiert
-    $stmt = $pdo->prepare("SELECT 1 FROM users WHERE email = ?");
-    $stmt->execute([$email]);
-    if ($stmt->fetchColumn()) {
-        echo json_encode(['status' => 'error', 'message' => 'Diese E-Mail ist bereits registriert.']);
-        exit;
+    $existingUserStatement = $pdo->prepare('SELECT 1 FROM users WHERE email = ?');
+    $existingUserStatement->execute([$email]);
+    if ($existingUserStatement->fetchColumn()) {
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Diese E-Mail ist bereits registriert.',
+        ], 409);
     }
 
     try {
         $pdo->beginTransaction();
-        
-        // Passwort sicher hashen!
-        $hashedPassword = password_hash($passwort, PASSWORD_DEFAULT);
-        
-        $stmt = $pdo->prepare("INSERT INTO users (vorname, nachname, email, passwort) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$vorname, $nachname, $email, $hashedPassword]);
-        $newUserId = $pdo->lastInsertId();
 
-        // Account für Finanzen anlegen
-        $stmtAcc = $pdo->prepare("INSERT INTO accounts (user_id, balance) VALUES (?, 0.00)");
-        $stmtAcc->execute([$newUserId]);
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+        $userStatement = $pdo->prepare(
+            "INSERT INTO users (vorname, nachname, email, passwort, status) VALUES (?, ?, ?, ?, 'USER')"
+        );
+        $userStatement->execute([$firstName, $lastName, $email, $hashedPassword]);
+        $newUserId = (int) $pdo->lastInsertId();
+
+        $accountStatement = $pdo->prepare('INSERT INTO accounts (user_id, balance) VALUES (?, 0.00)');
+        $accountStatement->execute([$newUserId]);
 
         $pdo->commit();
-        echo json_encode(['status' => 'success']);
-    } catch(Exception $e) {
-        $pdo->rollBack();
-        echo json_encode(['status' => 'error', 'message' => 'Fehler bei der Registrierung.']);
+        mm_json_response(['status' => 'success']);
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        mm_log_exception('portal_register', $exception);
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Fehler bei der Registrierung.',
+        ], 500);
     }
-    exit;
 }
 
 if ($action === 'logout') {
-    // Session komplett zerstören
-    $_SESSION = array();
-    if (ini_get("session.use_cookies")) {
-        $params = session_get_cookie_params();
-        setcookie(session_name(), '', time() - 42000, $params["path"], $params["domain"], $params["secure"], $params["httponly"]);
+    portal_require_method('POST');
+    $userId = portal_get_session_user_id();
+
+    if ($userId > 0) {
+        try {
+            mm_require_csrf_token();
+        } catch (MmClientException $exception) {
+            mm_json_response([
+                'status' => 'error',
+                'message' => $exception->getMessage(),
+            ], 403);
+        }
     }
-    session_destroy();
-    echo json_encode(['status' => 'success']);
-    exit;
+
+    $identifier = $_COOKIE['identifier'] ?? null;
+    mm_logout_user($pdo, $userId, $identifier, [
+        'mensa_portal_login',
+        'mensa_login',
+        'mensa_admin_login',
+        'mensa_teacher_login',
+        'PHPSESSID',
+    ]);
+    mm_json_response(['status' => 'success']);
 }
 
-// ==========================================
-// GESCHÜTZTE ENDPUNKTE (Login erforderlich)
-// ==========================================
-
 if ($action === 'getData') {
-    if (!isset($_SESSION['userid'])) {
-        http_response_code(401);
-        echo json_encode(['status' => 'unauthorized', 'message' => 'Bitte einloggen.']);
-        exit;
-    }
+    portal_require_method('GET');
 
-    $userId = (int)$_SESSION['userid'];
+    $userId = portal_require_logged_in_user_id();
 
-    // User & Account-Balance holen
-    $stmt = $pdo->prepare("
-        SELECT u.vorname, u.nachname, u.email, a.balance, a.account_id 
-        FROM users u 
-        LEFT JOIN accounts a ON u.id = a.user_id 
-        WHERE u.id = ?
-    ");
-    $stmt->execute([$userId]);
-    $userData = $stmt->fetch();
+    $userStatement = $pdo->prepare(
+        'SELECT u.vorname, u.nachname, u.email, a.balance, a.account_id
+         FROM users u
+         LEFT JOIN accounts a ON u.id = a.user_id
+         WHERE u.id = ?'
+    );
+    $userStatement->execute([$userId]);
+    $userData = $userStatement->fetch(PDO::FETCH_ASSOC);
 
     if (!$userData) {
-        echo json_encode(['status' => 'error', 'message' => 'Benutzer nicht gefunden.']);
-        exit;
+        mm_destroy_session();
+        mm_json_response([
+            'status' => 'error',
+            'message' => 'Benutzer nicht gefunden.',
+        ], 404);
     }
 
     $accountId = $userData['account_id'];
+    $csrfToken = mm_get_csrf_token();
 
     $response = [
         'status' => 'success',
+        'csrfToken' => $csrfToken,
         'data' => [
             'user' => [
                 'firstName' => $userData['vorname'],
-                'lastName'  => $userData['nachname'],
-                'email'     => $userData['email'],
-                'balance'   => (float)$userData['balance']
+                'lastName' => $userData['nachname'],
+                'email' => $userData['email'],
+                'balance' => (float) $userData['balance'],
             ],
             'transactions' => [],
-            'abos'         => [],
-            'cards'        => [],
-            'config'       => []
-        ]
+            'abos' => [],
+            'cards' => [],
+            'config' => [],
+        ],
     ];
 
-    // --- System-Konfiguration (default_values) laden ---
-    $stmtConf = $pdo->query("SELECT name, def_value FROM default_values WHERE name IN ('card_deposit', 'full_year_per_day', 'half_year_per_day', 'school_name', 'school_bic', 'school_iban')");
+    $configStatement = $pdo->query(
+        "SELECT name, def_value
+         FROM default_values
+         WHERE name IN ('card_deposit', 'full_year_per_day', 'half_year_per_day', 'school_name', 'school_bic', 'school_iban')"
+    );
     $configData = [];
-    while ($row = $stmtConf->fetch()) {
+    while ($row = $configStatement->fetch(PDO::FETCH_ASSOC)) {
         $name = $row['name'];
-        $val = $row['def_value'];
-        
-        if (in_array($name, ['card_deposit', 'full_year_per_day', 'half_year_per_day'])) {
-            $configData[$name] = (float)$val;
+        $value = $row['def_value'];
+
+        if (in_array($name, ['card_deposit', 'full_year_per_day', 'half_year_per_day'], true)) {
+            $configData[$name] = (float) $value;
         } else {
-            $configData[$name] = $val;
+            $configData[$name] = $value;
         }
     }
     $response['data']['config'] = $configData;
 
     if ($accountId) {
-        // Transaktionen (Sicher, da hart auf $accountId gefiltert wird)
-        $stmt = $pdo->prepare("
-            SELECT transaction_id, amount, transaction_type, occurred_at, description 
-            FROM account_transactions 
-            WHERE account_id = ? AND transaction_type != 'SUBSCRIPTION_USAGE'
-            ORDER BY occurred_at DESC
-        ");
-        $stmt->execute([$accountId]);
-        $txs = $stmt->fetchAll();
-        
-        foreach ($txs as $tx) {
-            $isDeposit = in_array($tx['transaction_type'], ['TOPUP', 'REFUND', 'REUSE']);
+        $transactionsStatement = $pdo->prepare(
+            "SELECT transaction_id, amount, transaction_type, occurred_at, description
+             FROM account_transactions
+             WHERE account_id = ? AND transaction_type != 'SUBSCRIPTION_USAGE'
+             ORDER BY occurred_at DESC"
+        );
+        $transactionsStatement->execute([$accountId]);
+        $transactions = $transactionsStatement->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($transactions as $transaction) {
+            $isDeposit = in_array($transaction['transaction_type'], ['TOPUP', 'REFUND', 'REUSE'], true);
             $icon = 'Wallet';
-            if (in_array($tx['transaction_type'], ['USAGE', 'SUBSCRIPTION_USAGE'])) $icon = 'Utensils';
-            if ($tx['transaction_type'] === 'SUBSCRIPTION_PURCHASE') $icon = 'CalendarDays';
-            if ($tx['transaction_type'] === 'TOPUP' && stripos($tx['description'], 'Bar') !== false) $icon = 'Banknote';
+            if (in_array($transaction['transaction_type'], ['USAGE', 'SUBSCRIPTION_USAGE'], true)) {
+                $icon = 'Utensils';
+            }
+            if ($transaction['transaction_type'] === 'SUBSCRIPTION_PURCHASE') {
+                $icon = 'CalendarDays';
+            }
+            if ($transaction['transaction_type'] === 'TOPUP' && stripos((string) $transaction['description'], 'Bar') !== false) {
+                $icon = 'Banknote';
+            }
 
             $response['data']['transactions'][] = [
-                'id'          => $tx['transaction_id'],
-                'type'        => $isDeposit ? 'deposit' : 'expense',
-                'amount'      => (float)$tx['amount'],
-                'date'        => date('d.m.Y', strtotime($tx['occurred_at'])),
-                'description' => !empty($tx['description']) ? $tx['description'] : $tx['transaction_type'],
-                'iconName'    => $icon
+                'id' => $transaction['transaction_id'],
+                'type' => $isDeposit ? 'deposit' : 'expense',
+                'amount' => (float) $transaction['amount'],
+                'date' => date('d.m.Y', strtotime((string) $transaction['occurred_at'])),
+                'description' => !empty($transaction['description']) ? $transaction['description'] : $transaction['transaction_type'],
+                'iconName' => $icon,
             ];
         }
 
-        // Abo-Verwendungen
-        $stmtUsages = $pdo->prepare("
-            SELECT t.occurred_at, c.holder_id 
-            FROM account_transactions t
-            JOIN chip_cards c ON t.card_id = c.card_uid
-            WHERE t.account_id = ? AND t.transaction_type = 'SUBSCRIPTION_USAGE'
-        ");
-        $stmtUsages->execute([$accountId]);
-        $usages = $stmtUsages->fetchAll();
+        $usageStatement = $pdo->prepare(
+            "SELECT t.occurred_at, c.holder_id
+             FROM account_transactions t
+             JOIN chip_cards c ON t.card_id = c.card_uid
+             WHERE t.account_id = ? AND t.transaction_type = 'SUBSCRIPTION_USAGE'"
+        );
+        $usageStatement->execute([$accountId]);
+        $usages = $usageStatement->fetchAll(PDO::FETCH_ASSOC);
 
-        // Abos (Sicher, da created_by = $accountId)
-        $stmt = $pdo->prepare("
-            SELECT s.subscription_id, s.type, s.weekdays, s.start_date, s.end_date, h.holder_id, h.first_name, h.last_name
-            FROM subscriptions s
-            JOIN card_holders h ON s.holder_id = h.holder_id
-            WHERE h.created_by = ?
-        ");
-        $stmt->execute([$accountId]);
-        $subs = $stmt->fetchAll();
+        $subscriptionsStatement = $pdo->prepare(
+            "SELECT s.subscription_id, s.type, s.weekdays, s.start_date, s.end_date, h.holder_id, h.first_name, h.last_name
+             FROM subscriptions s
+             JOIN card_holders h ON s.holder_id = h.holder_id
+             WHERE h.created_by = ?"
+        );
+        $subscriptionsStatement->execute([$accountId]);
+        $subscriptions = $subscriptionsStatement->fetchAll(PDO::FETCH_ASSOC);
 
-        foreach ($subs as $sub) {
-            $isActive = (strtotime($sub['start_date']) <= time() && strtotime($sub['end_date']) >= time());
-            $daysMap = ['MONDAY'=>'Mo', 'TUESDAY'=>'Di', 'WEDNESDAY'=>'Mi', 'THURSDAY'=>'Do', 'FRIDAY'=>'Fr'];
-            $daysMapNum = ['MONDAY'=>1, 'TUESDAY'=>2, 'WEDNESDAY'=>3, 'THURSDAY'=>4, 'FRIDAY'=>5];
-            
-            $rawDays = explode(',', $sub['weekdays']);
+        foreach ($subscriptions as $subscription) {
+            $isActive = strtotime((string) $subscription['start_date']) <= time()
+                && strtotime((string) $subscription['end_date']) >= time();
+
+            $daysMap = [
+                'MONDAY' => 'Mo',
+                'TUESDAY' => 'Di',
+                'WEDNESDAY' => 'Mi',
+                'THURSDAY' => 'Do',
+                'FRIDAY' => 'Fr',
+            ];
+            $daysMapNumber = [
+                'MONDAY' => 1,
+                'TUESDAY' => 2,
+                'WEDNESDAY' => 3,
+                'THURSDAY' => 4,
+                'FRIDAY' => 5,
+            ];
+
             $daysArray = [];
             $validDays = [];
-            foreach ($rawDays as $d) {
-                $dTrim = trim($d);
-                $daysArray[] = $daysMap[$dTrim] ?? $dTrim;
-                if (isset($daysMapNum[$dTrim])) $validDays[] = $daysMapNum[$dTrim];
+            foreach (explode(',', (string) $subscription['weekdays']) as $day) {
+                $trimmedDay = trim($day);
+                $daysArray[] = $daysMap[$trimmedDay] ?? $trimmedDay;
+                if (isset($daysMapNumber[$trimmedDay])) {
+                    $validDays[] = $daysMapNumber[$trimmedDay];
+                }
             }
-            $subType = 'Abo';
-            if ($sub['type'] === 'HALF_YEAR') $subType = 'Halbjahresabo';
-            if ($sub['type'] === 'FULL_YEAR') $subType = 'Ganzjahresabo';
+
+            $subscriptionType = 'Abo';
+            if ($subscription['type'] === 'HALF_YEAR') {
+                $subscriptionType = 'Halbjahresabo';
+            } elseif ($subscription['type'] === 'FULL_YEAR') {
+                $subscriptionType = 'Ganzjahresabo';
+            }
 
             $usageCount = 0;
-            $subStart = strtotime($sub['start_date'] . ' 00:00:00');
-            $subEnd = strtotime($sub['end_date'] . ' 23:59:59');
+            $subscriptionStart = strtotime($subscription['start_date'] . ' 00:00:00');
+            $subscriptionEnd = strtotime($subscription['end_date'] . ' 23:59:59');
 
-            foreach ($usages as $use) {
-                if ($use['holder_id'] == $sub['holder_id']) {
-                    $useTime = strtotime($use['occurred_at']);
-                    if ($useTime >= $subStart && $useTime <= $subEnd) {
-                        $useDay = (int)date('N', $useTime);
-                        if (in_array($useDay, $validDays)) $usageCount++;
-                    }
+            foreach ($usages as $usage) {
+                if ((int) $usage['holder_id'] !== (int) $subscription['holder_id']) {
+                    continue;
+                }
+
+                $usageTime = strtotime((string) $usage['occurred_at']);
+                if ($usageTime < $subscriptionStart || $usageTime > $subscriptionEnd) {
+                    continue;
+                }
+
+                if (in_array((int) date('N', $usageTime), $validDays, true)) {
+                    $usageCount++;
                 }
             }
 
             $response['data']['abos'][] = [
-                'id'         => $sub['subscription_id'],
-                'type'       => $subType,
-                'student'    => $sub['first_name'] . ' ' . $sub['last_name'],
-                'days'       => $daysArray,
-                'validUntil' => date('d.m.Y', strtotime($sub['end_date'])),
-                'isActive'   => $isActive,
-                'usageCount' => $usageCount
+                'id' => $subscription['subscription_id'],
+                'type' => $subscriptionType,
+                'student' => $subscription['first_name'] . ' ' . $subscription['last_name'],
+                'days' => $daysArray,
+                'validUntil' => date('d.m.Y', strtotime((string) $subscription['end_date'])),
+                'isActive' => $isActive,
+                'usageCount' => $usageCount,
             ];
         }
 
-        // Karten & Holder (Sicher, da created_by = $accountId)
-        $stmt = $pdo->prepare("
-            SELECT h.holder_id, h.first_name, h.last_name, 
-                   c.card_uid, c.active,
-                   COALESCE(
-                       (SELECT s.type
-                       FROM subscriptions s
-                       WHERE s.holder_id = h.holder_id
-                       AND s.start_date <= CURDATE()
-                       AND s.end_date   >= CURDATE()
-                       LIMIT 1),
-                       'PREPAID'
-                   ) AS subscription_type
-            FROM card_holders h
-            LEFT JOIN chip_cards c ON h.holder_id = c.holder_id
-            WHERE h.created_by = ?
-        ");
-        $stmt->execute([$accountId]);
-        $cards = $stmt->fetchAll();
+        $cardsStatement = $pdo->prepare(
+            "SELECT h.holder_id, h.first_name, h.last_name,
+                    c.card_uid, c.active,
+                    COALESCE(
+                        (SELECT s.type
+                         FROM subscriptions s
+                         WHERE s.holder_id = h.holder_id
+                         AND s.start_date <= CURDATE()
+                         AND s.end_date >= CURDATE()
+                         LIMIT 1),
+                        'PREPAID'
+                    ) AS subscription_type
+             FROM card_holders h
+             LEFT JOIN chip_cards c ON h.holder_id = c.holder_id
+             WHERE h.created_by = ?"
+        );
+        $cardsStatement->execute([$accountId]);
+        $cards = $cardsStatement->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($cards as $card) {
             $hasCard = !empty($card['card_uid']);
             $response['data']['cards'][] = [
-                'holderId'      => $card['holder_id'],
-                'id'            => $hasCard ? $card['card_uid'] : 'Wartend...',
-                'student'       => htmlspecialchars($card['first_name'] . ' ' . $card['last_name']),
-                'status'        => $hasCard ? ($card['active'] ? 'Aktiv' : 'Gesperrt') : 'Karte ausstehend',
-                'isPrepaidOnly' => ($card['subscription_type'] === 'PREPAID'),
-                'img'           => "https://api.dicebear.com/7.x/avataaars/svg?seed=" . urlencode($card['first_name'])
+                'holderId' => $card['holder_id'],
+                'id' => $hasCard ? $card['card_uid'] : 'Wartend...',
+                'student' => htmlspecialchars($card['first_name'] . ' ' . $card['last_name'], ENT_QUOTES, 'UTF-8'),
+                'status' => $hasCard ? ($card['active'] ? 'Aktiv' : 'Gesperrt') : 'Karte ausstehend',
+                'isPrepaidOnly' => $card['subscription_type'] === 'PREPAID',
+                'img' => 'https://api.dicebear.com/7.x/avataaars/svg?seed=' . urlencode((string) $card['first_name']),
             ];
         }
     }
 
-    echo json_encode($response);
-    exit;
+    mm_json_response($response);
 }
 
-echo json_encode(['status' => 'error', 'message' => 'Aktion nicht gefunden.']);
+mm_json_response([
+    'status' => 'error',
+    'message' => 'Aktion nicht gefunden.',
+], 400);

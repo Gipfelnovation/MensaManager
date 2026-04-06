@@ -1,33 +1,21 @@
 <?php
-// /api/login.php
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
-header("Access-Control-Allow-Origin: $origin");
-header('Access-Control-Allow-Credentials: true');
-header('Content-Type: application/json');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    exit;
+require_once __DIR__ . '/../../shared/php/mm_security.php';
+require_once __DIR__ . '/config.inc.php';
+
+mm_apply_cors('admin', ['GET', 'POST', 'OPTIONS'], ['Content-Type']);
+mm_start_session('mensa_login');
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['config'])) {
+    mm_json_response([
+        'success' => true,
+        'captchaSiteKey' => mm_get_hcaptcha_site_key(),
+    ]);
 }
 
-session_name("mensa_login");
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path' => '/',
-    'secure' => true,
-    'httponly' => true,
-    'samesite' => 'Strict'
-]);
-session_start();
-
-require_once($_SERVER['DOCUMENT_ROOT'] . "/api/config.inc.php");
-require_once($_SERVER['DOCUMENT_ROOT'] . "/api/functions.inc.php");
-
 // --- KONFIGURATION LOGINSICHERHEIT ---
-$max_attempts = 5;               // Maximale Fehlversuche
-$lockout_time = 15;              // Sperrzeit in Minuten
-$hcaptcha_secret = '***REMOVED***';
+$max_attempts = 5;
+$lockout_time = 15;
 
 // --- TOTP HILFSFUNKTIONEN ---
 function generateBase32Secret($length = 16) {
@@ -95,7 +83,7 @@ function getRealIpAddr() {
     }
     return $ip;
 }
-$ip_address = getRealIpAddr();
+$ip_address = mm_get_real_ip();
 
 function logFailedAttempt($pdo, $ip_address, $max_attempts, $lockout_time) {
     $stmt = $pdo->prepare("INSERT INTO login_attempts (ip_address, attempts, last_attempt) 
@@ -164,48 +152,20 @@ if ($action === 'verify_2fa') {
         $_SESSION['userid'] = $user['id'];
         unset($_SESSION['pending_2fa_userid']);
 
-        if (empty($_SESSION['csrf_token'])) {
-            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-        }
+        mm_get_csrf_token();
 
         $stmt = $pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
         $stmt->execute([$ip_address]);
 
         if ($stayLoggedIn) {
-            $identifier = bin2hex(random_bytes(16));
-            $securitytoken = bin2hex(random_bytes(16));
-            
-            $insert = $pdo->prepare("INSERT INTO securitytokens (user_id, identifier, securitytoken) VALUES (:user_id, :identifier, :securitytoken)");
-            $insert->execute(array('user_id' => $user['id'], 'identifier' => $identifier, 'securitytoken' => sha1($securitytoken)));
-            
-            $host = $_SERVER['HTTP_HOST'] ?? '';
-            $host = preg_replace('/:\d+$/', '', $host);
-            $parts = explode('.', $host);
-            if (count($parts) > 2) {
-                array_shift($parts);
+            try {
+                mm_issue_remember_me_token($pdo, $user['id']);
+            } catch (MmConfigurationException $exception) {
+                mm_log_exception('admin_remember_me_configuration', $exception);
+                http_response_code(500);
+                echo json_encode(['success' => false, 'error' => 'Daueranmeldung ist momentan nicht verfuegbar.']);
+                exit;
             }
-            $root = implode('.', $parts);
-            $root = preg_replace('/^www\./', '', $root);
-            $cookieDomain = '.' . $root;
-            $cookieExpire = time() + (3600*24*365);
-            $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
-
-            $cookieOptions = [
-                'expires'  => $cookieExpire,
-                'path'     => '/',
-                'domain'   => $cookieDomain,
-                'secure'   => $secure,
-                'httponly' => true,
-                'samesite' => 'Strict'
-            ];
-            setcookie("identifier", $identifier, $cookieOptions);
-            setcookie("securitytoken", $securitytoken, $cookieOptions);
-            
-            // Lokaler Fallback
-            $localOptions = $cookieOptions;
-            $localOptions['domain'] = '';
-            setcookie("identifier", $identifier, $localOptions);
-            setcookie("securitytoken", $securitytoken, $localOptions);
         }
 
         echo json_encode(['success' => true, 'isAdmin' => true]);
@@ -226,21 +186,15 @@ if (empty($captchaResponse)) {
     exit;
 }
 
-$verifyResponse = file_get_contents('https://hcaptcha.com/siteverify', false, stream_context_create([
-            'http' => [
-                'header' => "Content-type: application/x-www-form-urlencoded\r\n",
-                'method' => 'POST',
-                'content' => http_build_query([
-                    'secret' => $hcaptcha_secret,
-                    'response' => $captchaResponse,
-                    'remoteip' => $ip_address
-                ])
-            ]
-        ]));
-    
-$responseData = json_decode($verifyResponse);
-    if (!$responseData || !$responseData->success) {
-        logFailedAttempt($pdo, $ip_address, $max_attempts, $lockout_time);
+    try {
+        if (!mm_verify_hcaptcha_token($captchaResponse, $ip_address)) {
+            logFailedAttempt($pdo, $ip_address, $max_attempts, $lockout_time);
+        }
+    } catch (MmConfigurationException $exception) {
+        mm_log_exception('admin_hcaptcha_configuration', $exception);
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Die Anmeldung ist momentan nicht verfuegbar.']);
+        exit;
     }
 
     $email = $input['email'] ?? '';

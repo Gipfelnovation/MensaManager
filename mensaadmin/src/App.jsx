@@ -590,6 +590,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState({ type: 'dashboard', id: null });
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [csrfToken, setCsrfToken] = useState(''); // NEU: CSRF Token Status
+  const [captchaSiteKey, setCaptchaSiteKey] = useState('');
   
   const [assignModalData, setAssignModalData] = useState(null);
   const [payAboModalData, setPayAboModalData] = useState(null);
@@ -618,8 +619,21 @@ export default function App() {
   });
 
   useEffect(() => {
+    fetchLoginConfig();
     fetchDashboard();
   }, []);
+
+  const fetchLoginConfig = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/login.php?config=1`, { credentials: 'include' });
+      const data = await res.json();
+      if (data.captchaSiteKey) {
+        setCaptchaSiteKey(data.captchaSiteKey);
+      }
+    } catch (err) {
+      console.error('Login config failed', err);
+    }
+  };
 
   const fetchJson = async (url) => {
     const res = await fetch(url, { credentials: 'include' });
@@ -1069,7 +1083,11 @@ export default function App() {
             </div>
             <div ref={captchaParentRef} className="w-full overflow-hidden rounded-xl border border-gray-200 bg-gray-50 flex justify-center items-center h-[78px]">
                 <div style={{ transform: `scale(${captchaScale})`, transformOrigin: 'center center' }}>
-                  <HCaptcha sitekey="***REMOVED***" onVerify={(token) => setCaptchaToken(token)} />
+                  {captchaSiteKey ? (
+                    <HCaptcha sitekey={captchaSiteKey} onVerify={(token) => setCaptchaToken(token)} />
+                  ) : (
+                    <p className="text-sm text-gray-500">Captcha wird geladen...</p>
+                  )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1144,7 +1162,25 @@ export default function App() {
             </button>
           </div>
           <div className="flex items-center">
-            <button onClick={() => { setIsAuthenticated(false); setDashboardData(null); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg ml-4">
+            <button onClick={async () => {
+              try {
+                const response = await fetch(`${API_BASE}/logout.php`, {
+                  method: 'POST',
+                  headers: { 'X-CSRF-Token': csrfToken },
+                  credentials: 'include'
+                });
+                const result = await response.json().catch(() => null);
+                if (!response.ok || !result?.success) {
+                  throw new Error(result?.error || 'Logout fehlgeschlagen.');
+                }
+                setIsAuthenticated(false);
+                setDashboardData(null);
+                setCsrfToken('');
+              } catch (err) {
+                console.error('Logout failed', err);
+                window.alert(err.message || 'Logout fehlgeschlagen. Bitte erneut versuchen.');
+              }
+            }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg ml-4">
               <LogOut className="h-5 w-5" />
             </button>
           </div>

@@ -1,80 +1,22 @@
 <?php
-// data.php - API Endpoint
 
-// --- SICHERHEIT: Strikte CORS Konfiguration (Keine Wildcards mehr) ---
-$allowed_origins = [
-    'https://admin.mensamanager.de'
-];
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+require_once __DIR__ . '/../../shared/php/mm_security.php';
+require_once __DIR__ . '/config.inc.php';
 
-if (in_array($origin, $allowed_origins)) {
-header("Access-Control-Allow-Origin: $origin");
-} else {
-    // Fallback: Wenn der Origin nicht in der Liste ist oder nicht mitgesendet wird (Same-Origin)
-    // Wird der Zugriff für externe Cross-Origin Anfragen blockiert.
-    header("Access-Control-Allow-Origin: " . ($_SERVER['HTTP_HOST'] ?? 'localhost'));
-}
-
-header('Access-Control-Allow-Credentials: true');
-header('Content-Type: application/json; charset=utf-8');
+mm_apply_cors('admin', ['GET', 'OPTIONS'], ['Content-Type']);
+mm_start_session('mensa_login');
 
 try {
-    require_once($_SERVER['DOCUMENT_ROOT'] . "/api/config.inc.php");
-
-    if (isset($pdo)) {
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $user = mm_authenticate_user($pdo, ['ADMIN']);
+    if (!$user) {
+        mm_json_response(['error' => 'Zugriff verweigert. Session abgelaufen oder keine Admin-Rechte.'], 403);
     }
 
-    // --- AUTHENTIFIZIERUNG ---
-    session_name("mensa_login");
-    // SICHERHEIT: Session-Cookies für API-Aufrufe ebenfalls strikt halten
-    session_set_cookie_params([
-        'lifetime' => 0,
-        'path' => '/',
-        'secure' => true,
-        'httponly' => true,
-        'samesite' => 'Strict'
-    ]);
-    session_start();
-
-    $isAdmin = false;
-    if (isset($_SESSION['userid'])) {
-        $stmt = $pdo->prepare("SELECT status FROM users WHERE id = ?");
-        $stmt->execute([$_SESSION['userid']]);
-        if ($stmt->fetchColumn() === 'ADMIN') {
-            $isAdmin = true;
-        }
-    }
-
-    if (!$isAdmin && isset($_COOKIE['identifier']) && isset($_COOKIE['securitytoken'])) {
-        $stmt = $pdo->prepare("SELECT u.id, u.status, s.securitytoken FROM securitytokens s JOIN users u ON s.user_id = u.id WHERE s.identifier = ?");
-        $stmt->execute([$_COOKIE['identifier']]);
-        $tokenData = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($tokenData && sha1($_COOKIE['securitytoken']) === $tokenData['securitytoken']) {
-            if ($tokenData['status'] === 'ADMIN') {
-                $isAdmin = true;
-                $_SESSION['userid'] = $tokenData['id'];
-            }
-        }
-    }
-
-    if (!$isAdmin) {
-        http_response_code(403);
-        echo json_encode(['error' => 'Zugriff verweigert. Session abgelaufen oder keine Admin-Rechte.']);
-        exit;
-    }
-
-    // SICHERHEIT: CSRF-Token für die API-Kommunikation generieren, falls nicht vorhanden
-    if (empty($_SESSION['csrf_token'])) {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-    }
-    // --- ENDE AUTHENTIFIZIERUNG ---
-
+    $csrfToken = mm_get_csrf_token();
     $action = $_GET['action'] ?? 'dashboard';
     $response = [];
-
     if ($action === 'dashboard') {
-        $response['csrfToken'] = $_SESSION['csrf_token']; // SICHERHEIT: CSRF-Token ans Frontend übergeben
+        $response['csrfToken'] = $csrfToken;
         $response['stats'] = [
             'totalBalance' => 0.0,
             'activeCards' => 0,
@@ -134,7 +76,7 @@ try {
     } 
     
     elseif ($action === 'search') {
-        // SICHERHEIT: Rate Limiting für die Suchfunktion (Schutz vor Scraping)
+        // SICHERHEIT: Rate Limiting f�r die Suchfunktion (Schutz vor Scraping)
         if (!isset($_SESSION['last_search_time'])) {
             $_SESSION['last_search_time'] = time();
             $_SESSION['search_count'] = 0;
@@ -171,13 +113,13 @@ try {
             $stmt = $pdo->prepare("SELECT h.holder_id, h.first_name, h.last_name, h.class, a.user_id FROM card_holders h JOIN accounts a ON h.created_by = a.account_id WHERE h.first_name LIKE ? OR h.last_name LIKE ? LIMIT 5");
             $stmt->execute([$searchTerm, $searchTerm]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $results[] = ['title' => $row['first_name'] . ' ' . $row['last_name'], 'subtitle' => 'Klasse ' . $row['class'], 'category' => 'Schülerprofil', 'parentId' => 'p' . $row['user_id'], 'iconType' => 'Edit2'];
+                $results[] = ['title' => $row['first_name'] . ' ' . $row['last_name'], 'subtitle' => 'Klasse ' . $row['class'], 'category' => 'Sch�lerprofil', 'parentId' => 'p' . $row['user_id'], 'iconType' => 'Edit2'];
             }
 
             $stmt = $pdo->prepare("SELECT c.card_uid, h.first_name, h.last_name, a.user_id FROM chip_cards c JOIN card_holders h ON c.holder_id = h.holder_id JOIN accounts a ON h.created_by = a.account_id WHERE c.card_uid LIKE ? LIMIT 5");
             $stmt->execute([$searchTerm]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $results[] = ['title' => 'Karte: ' . $row['card_uid'], 'subtitle' => 'Gehört zu: ' . $row['first_name'] . ' ' . $row['last_name'], 'category' => 'Kartennummer', 'parentId' => 'p' . $row['user_id'], 'iconType' => 'CreditCard'];
+                $results[] = ['title' => 'Karte: ' . $row['card_uid'], 'subtitle' => 'Geh�rt zu: ' . $row['first_name'] . ' ' . $row['last_name'], 'category' => 'Kartennummer', 'parentId' => 'p' . $row['user_id'], 'iconType' => 'CreditCard'];
             }
         }
         $response['results'] = $results;
@@ -224,7 +166,7 @@ try {
                 $response['cards'][] = ['id' => 'pending_' . $row['holder_id'], 'studentId' => 's' . $row['holder_id'], 'cardNumber' => '-', 'status' => 'Bestellt'];
             }
 
-            // Abos (Status anhand von transaction_nr prüfen + Daten & Tage auslesen)
+            // Abos (Status anhand von transaction_nr pr�fen + Daten & Tage auslesen)
             $response['subscriptions'] = [];
             $stmt = $pdo->prepare("SELECT s.subscription_id, s.holder_id, s.type, s.transaction_nr, s.weekdays, s.start_date, s.end_date FROM subscriptions s JOIN card_holders h ON s.holder_id = h.holder_id JOIN accounts a ON h.created_by = a.account_id WHERE a.user_id = ?");
             $stmt->execute([$parentId]);
@@ -343,7 +285,7 @@ try {
         $stmt->execute([$startDate, $endDate]);
         $response['totalBalance'] = (float) $stmt->fetchColumn();
 
-        // 2. Gesamtwert externer Abokäufe (Ausschließen von "(Guthaben)")
+        // 2. Gesamtwert externer Abok�ufe (Ausschlie�en von "(Guthaben)")
         //    Da die Transaktionen im negativen Bereich liegen (-334.00), verwenden wir ABS()
         $stmt = $pdo->prepare("
             SELECT SUM(ABS(amount)) 
@@ -369,8 +311,8 @@ try {
         // 4. Wochentags-Counter initialisieren
         $weekdayCounts = ['1' => 0, '2' => 0, '3' => 0, '4' => 0, '5' => 0];
         
-        // Alle eingetragenen Wochentage aus den AKTIVEN Abos auslesen und zusammenzählen
-        // Gültig: Startdatum ist erreicht UND (Enddatum ist nicht gesetzt ODER Enddatum liegt noch in der Zukunft/Heute)
+        // Alle eingetragenen Wochentage aus den AKTIVEN Abos auslesen und zusammenz�hlen
+        // G�ltig: Startdatum ist erreicht UND (Enddatum ist nicht gesetzt ODER Enddatum liegt noch in der Zukunft/Heute)
         // UND: Das Abo muss bezahlt sein (transaction_nr ist nicht leer)
         $stmt = $pdo->query("
             SELECT weekdays 
@@ -384,7 +326,7 @@ try {
             $days = explode(',', $row['weekdays']);
             foreach ($days as $d) {
                 $d = trim(strtoupper($d));
-                // Zählt den jeweiligen Tag (Unterstützt numerisch und Englisch)
+                // Z�hlt den jeweiligen Tag (Unterst�tzt numerisch und Englisch)
                 if ($d === '1' || $d === 'MONDAY')    $weekdayCounts['1']++;
                 if ($d === '2' || $d === 'TUESDAY')   $weekdayCounts['2']++;
                 if ($d === '3' || $d === 'WEDNESDAY') $weekdayCounts['3']++;
@@ -403,12 +345,12 @@ try {
         
         $response['transactions'] = [];
         
-        // Hole alle für die Buchhaltung relevanten Transaktionen:
+        // Hole alle f�r die Buchhaltung relevanten Transaktionen:
         // 1. Alle echten Einzahlungen (TOPUP)
-        // 2. Alle externen Abokäufe (SUBSCRIPTION_PURCHASE ohne 'Guthaben')
+        // 2. Alle externen Abok�ufe (SUBSCRIPTION_PURCHASE ohne 'Guthaben')
         // 3. Alle externen Kartenpfande (USAGE mit 'Kartenpfand' ohne 'Guthaben')
         
-        // UPDATE: LEFT JOIN und COALESCE hinzugefügt, damit keine Zeilen wegen fehlender Accounts oder NULL-Beschreibungen verworfen werden.
+        // UPDATE: LEFT JOIN und COALESCE hinzugef�gt, damit keine Zeilen wegen fehlender Accounts oder NULL-Beschreibungen verworfen werden.
         $stmt = $pdo->prepare("
             SELECT t.transaction_id, t.occurred_at, ABS(t.amount), t.description, t.transaction_type, 
                    a.user_id, CONCAT(u.vorname, ' ', u.nachname) AS user_name
@@ -426,7 +368,7 @@ try {
         $stmt->execute([$startDate, $endDate]);
         
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            // Typ-Übersetzung für die Excel-Tabelle
+            // Typ-�bersetzung f�r die Excel-Tabelle
             $typLabel = 'Unbekannt';
             if ($row['transaction_type'] === 'TOPUP') {
                 $typLabel = 'Guthaben-Einzahlung';
@@ -455,6 +397,8 @@ try {
 
 } catch (\Throwable $e) {
     http_response_code(500);
-    error_log("Backend Absturz [data.php]: " . $e->getMessage() . " in Zeile " . $e->getLine());
+    mm_log_exception('admin_data', $e);
     echo json_encode(['error' => "Ein Fehler beim Laden der Datenbank ist aufgetreten."]);
 }
+
+

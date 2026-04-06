@@ -1,87 +1,30 @@
 <?php
-// --- SICHERHEIT: Strikte CORS Konfiguration ---
-$allowed_origins = [
-    'https://admin.mensamanager.de'       // Für lokale Entwicklung
-];
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
-if (in_array($origin, $allowed_origins)) {
-header("Access-Control-Allow-Origin: $origin");
-} else {
-    header("Access-Control-Allow-Origin: " . ($_SERVER['HTTP_HOST'] ?? 'localhost'));
+require_once __DIR__ . '/../../shared/php/mm_security.php';
+require_once __DIR__ . '/config.inc.php';
+
+mm_apply_cors('admin', ['POST', 'OPTIONS'], ['Content-Type', 'X-CSRF-Token']);
+mm_start_session('mensa_login');
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+    mm_json_response(['error' => 'Methode nicht erlaubt.'], 405);
 }
 
-header('Access-Control-Allow-Credentials: true');
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    exit;
+$user = mm_authenticate_user($pdo, ['ADMIN']);
+if (!$user) {
+    mm_json_response(['error' => 'Zugriff verweigert. Session abgelaufen oder keine Admin-Rechte.'], 403);
 }
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    exit;
+$currentUserId = (int) $user['id'];
+
+try {
+    mm_require_csrf_token();
+} catch (MmClientException $exception) {
+    mm_json_response(['error' => $exception->getMessage()], 403);
 }
-
-require_once($_SERVER['DOCUMENT_ROOT'] . "/api/config.inc.php");
-
-// --- AUTHENTIFIZIERUNG ---
-session_name("mensa_login");
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path' => '/',
-    'secure' => true,
-    'httponly' => true,
-    'samesite' => 'Strict'
-]);
-session_start();
-
-$isAdmin = false;
-$currentUserId = null;
-
-if (!isset($_SESSION['userid'])) {
-    http_response_code(401);
-}
-
-if (isset($_SESSION['userid'])) {
-    $stmt = $pdo->prepare("SELECT status FROM users WHERE id = ?");
-    $stmt->execute([$_SESSION['userid']]);
-    if ($stmt->fetchColumn() === 'ADMIN') {
-        $isAdmin = true;
-        $currentUserId = $_SESSION['userid'];
-    }
-}
-
-if (!$isAdmin && isset($_COOKIE['identifier']) && isset($_COOKIE['securitytoken'])) {
-    $stmt = $pdo->prepare("SELECT u.id, u.status, s.securitytoken FROM securitytokens s JOIN users u ON s.user_id = u.id WHERE s.identifier = ?");
-    $stmt->execute([$_COOKIE['identifier']]);
-    $tokenData = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($tokenData && sha1($_COOKIE['securitytoken']) === $tokenData['securitytoken']) {
-        if ($tokenData['status'] === 'ADMIN') {
-            $isAdmin = true;
-            $_SESSION['userid'] = $tokenData['id'];
-            $currentUserId = $tokenData['id'];
-        }
-    }
-}
-
-if (!$isAdmin || !$currentUserId) {
-    http_response_code(403);
-    echo json_encode(['error' => 'Zugriff verweigert. Session abgelaufen oder keine Admin-Rechte.']);
-    exit;
-}
-
-// --- SICHERHEIT: CSRF-Schutz ---
-$clientCsrf = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
-if (empty($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $clientCsrf)) {
-    http_response_code(403);
-    echo json_encode(['error' => 'Ungültiges Sicherheits-Token (CSRF). Bitte Seite neu laden.']);
-    exit;
-}
-// --- ENDE CSRF SCHUTZ ---
 
 $input = json_decode(file_get_contents('php://input'), true);
+$input = is_array($input) ? $input : [];
 $action = $input['action'] ?? '';
 $data = $input['data'] ?? [];
 
@@ -162,7 +105,7 @@ try {
                 $refundAmount = abs((float)$tx['amount']);
                 $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?")->execute([$refundAmount, $tx['account_id']]);
                 // SICHERHEIT: Audit Log (wer hat erstattet?)
-                $desc = "Erstattung für: " . $tx['description'];
+                $desc = "Erstattung f�r: " . $tx['description'];
                 $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'REFUND', ?, NOW(), ?)")
                     ->execute([$tx['account_id'], $refundAmount, $desc, $currentUserId]);
                 $pdo->commit();
@@ -180,7 +123,7 @@ try {
 
         case 'markAboPaid':
             $aboId = (int) str_replace('abo', '', $data['aboId']);
-            // SICHERHEIT: Audit Log (Admin-ID nicht mehr in Description, nur noch regulär abspeichern falls nötig)
+            // SICHERHEIT: Audit Log (Admin-ID nicht mehr in Description, nur noch regul�r abspeichern falls n�tig)
             $txNr = strip_tags($data['transactionNr']);
             $stmt = $pdo->prepare("UPDATE subscriptions SET transaction_nr = ? WHERE subscription_id = ?");
             $response['success'] = $stmt->execute([$txNr, $aboId]);
@@ -245,7 +188,7 @@ try {
             $desc = $data['description'] ?: 'Manuelle Einzahlung (Admin)';
 
             if ($amount <= 0) {
-                $response['error'] = 'Der Betrag muss größer als 0 sein.';
+                $response['error'] = 'Der Betrag muss gr��er als 0 sein.';
                 break;
             }
 
@@ -268,12 +211,12 @@ try {
                 $pdo->commit();
                 $response['success'] = true;
             } else {
-                $response['error'] = 'Zugehöriges Konto wurde nicht gefunden.';
+                $response['error'] = 'Zugeh�riges Konto wurde nicht gefunden.';
             }
             break;
 
         case 'updateSettings':
-            // Verarbeitet alle gesendeten Schlüssel-Wert-Paare (Preise, Bankdaten oder Rechtliches)
+            // Verarbeitet alle gesendeten Schl�ssel-Wert-Paare (Preise, Bankdaten oder Rechtliches)
             $pdo->beginTransaction();
             try {
                 $stmt = $pdo->prepare("INSERT INTO default_values (name, def_value) VALUES (:name, :val) ON DUPLICATE KEY UPDATE def_value = :val2");
@@ -287,7 +230,7 @@ try {
                     ];
                     
                     if (in_array($key, $allowedKeys)) {
-                        // SICHERHEIT: HTML-Tags strikt filtern, außer bei den rechtlichen Dokumenten
+                        // SICHERHEIT: HTML-Tags strikt filtern, au�er bei den rechtlichen Dokumenten
                         $cleanValue = in_array($key, ['imprint', 'privacy']) ? $value : strip_tags((string)$value);
                         $stmt->execute([
                             'name' => $key,
@@ -301,7 +244,8 @@ try {
                 $response['success'] = true;
             } catch (Exception $e) {
                 $pdo->rollBack();
-                $response['error'] = 'Fehler beim Speichern der Einstellungen: ' . $e->getMessage();
+                mm_log_exception('admin_update_settings', $e);
+                $response['error'] = 'Fehler beim Speichern der Einstellungen.';
             }
             break;
 
@@ -318,49 +262,50 @@ try {
 
         case 'deleteUserAccount':
             $accountId = $data['userId'];
-            // SICHERHEIT: Löschung des eigenen Accounts über das Admin-Panel verhindern
+            // SICHERHEIT: L�schung des eigenen Accounts �ber das Admin-Panel verhindern
             if ((int)$accountId === (int)$currentUserId) {
-                $response['error'] = 'Du kannst deinen eigenen Account hier nicht löschen.';
+                $response['error'] = 'Du kannst deinen eigenen Account hier nicht l�schen.';
                 break;
             }
             try {
                 $pdo->beginTransaction();
                 
-                // 1. Alle Karten der Kinder löschen
+                // 1. Alle Karten der Kinder l�schen
                 $pdo->prepare("DELETE FROM chip_cards WHERE account_id IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
                 
-                // 2. Alle Abos der Kinder löschen
+                // 2. Alle Abos der Kinder l�schen
                 $pdo->prepare("DELETE FROM subscriptions WHERE holder_id IN (SELECT holder_id FROM card_holders WHERE created_by IN (SELECT account_id FROM accounts WHERE user_id = ?))")->execute([$accountId]);
                 
-                // 3. Alle Kinder (Holder) löschen
+                // 3. Alle Kinder (Holder) l�schen
                 $pdo->prepare("DELETE FROM card_holders WHERE created_by IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
                 
-                // 4. Alle Transaktionen löschen
+                // 4. Alle Transaktionen l�schen
                 $pdo->prepare("DELETE FROM account_transactions WHERE account_id IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
                 
-                // 5. Den Verrechnungsaccount löschen
+                // 5. Den Verrechnungsaccount l�schen
                 $pdo->prepare("DELETE FROM accounts WHERE account_id IN (SELECT account_id FROM accounts WHERE user_id = ?)")->execute([$accountId]);
 
-                // 6. Hauptkonto löschen
+                // 6. Hauptkonto l�schen
                 $pdo->prepare("DELETE FROM users WHERE id  = ?")->execute([$accountId]);
                 
                 $pdo->commit();
                 $response['success'] = true;
             } catch (Exception $e) {
                 $pdo->rollBack();
-                $response['error'] = 'Fehler bei der DSGVO-Löschung: ' . $e->getMessage();
+                mm_log_exception('admin_delete_user_account', $e);
+                $response['error'] = 'Fehler bei der DSGVO-Loeschung.';
             }
             break;
 
         case 'collectCard':
-            // IDs bereinigen, falls Präfixe mitgeschickt werden (z.B. 'c1', 's2')
+            // IDs bereinigen, falls Pr�fixe mitgeschickt werden (z.B. 'c1', 's2')
             $cardId = (int) str_replace('c', '', $data['cardId']);
             $studentId = (int) str_replace('s', '', $data['studentId']);
             $deleteStudent = !empty($data['deleteStudent']);
             
             $pdo->beginTransaction();
             
-            // 1. Account-ID der Karte ermitteln (für die Rückerstattung)
+            // 1. Account-ID der Karte ermitteln (f�r die R�ckerstattung)
             $stmt = $pdo->prepare("SELECT account_id FROM chip_cards WHERE card_id = ?");
             $stmt->execute([$cardId]);
             $accountId = $stmt->fetchColumn();
@@ -371,27 +316,27 @@ try {
                 $depositAmount = (float) $stmt->fetchColumn();
                 
                 if ($depositAmount > 0) {
-                    // 3. Balance auf dem Eltern-Account erhöhen
+                    // 3. Balance auf dem Eltern-Account erh�hen
                     $stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE account_id = ?");
                     $stmt->execute([$depositAmount, $accountId]);
                     
-                    // 4. Transaktion "Pfand zurückerstattet" eintragen
-                    $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'REFUND', 'Kartenpfand zurückerstattet', NOW(), ?)");
+                    // 4. Transaktion "Pfand zur�ckerstattet" eintragen
+                    $stmt = $pdo->prepare("INSERT INTO account_transactions (account_id, amount, transaction_type, description, occurred_at, admin_id) VALUES (?, ?, 'REFUND', 'Kartenpfand zur�ckerstattet', NOW(), ?)");
                     $stmt->execute([$accountId, $depositAmount, $currentUserId]);
                 }
             }
             
-            // 5. Karte aus dem System löschen
+            // 5. Karte aus dem System l�schen
             $stmt = $pdo->prepare("DELETE FROM chip_cards WHERE card_id = ?");
             $stmt->execute([$cardId]);
             
-            // 6. Falls $deleteStudent == true ist (Schüler hat keine aktiven Abos mehr)
+            // 6. Falls $deleteStudent == true ist (Sch�ler hat keine aktiven Abos mehr)
             if ($deleteStudent) {
-                // Lösche alle eventuell noch vorhandenen abgelaufenen Abos dieses Schülers
+                // L�sche alle eventuell noch vorhandenen abgelaufenen Abos dieses Sch�lers
                 $stmt = $pdo->prepare("DELETE FROM subscriptions WHERE holder_id = ?");
                 $stmt->execute([$studentId]);
                 
-                // Lösche den Schüler (Holder) aus der Datenbank
+                // L�sche den Sch�ler (Holder) aus der Datenbank
                 $stmt = $pdo->prepare("DELETE FROM card_holders WHERE holder_id = ?");
                 $stmt->execute([$studentId]);
             }
@@ -408,9 +353,12 @@ try {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
     }
-    error_log("Aktions-Fehler: " . $e->getMessage());
-    $response['error'] = 'Datenbankfehler bei der Ausführung.';
+    mm_log_exception('admin_actions', $e);
+    $response['error'] = 'Datenbankfehler bei der Ausf�hrung.';
 }
 
 echo json_encode($response);
 ?>
+
+
+

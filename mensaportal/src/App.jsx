@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
 import { 
   CreditCard, 
   Wallet, 
@@ -26,13 +25,6 @@ import HCaptcha from '@hcaptcha/react-hcaptcha';
 // Map für dynamisches Zuweisen von Icons aus dem Backend
 const IconMap = {
   Utensils, Wallet, Banknote, CalendarDays, CreditCard
-};
-
-// --- PAYPAL KONFIGURATION ---
-const paypalOptions = {
-  clientId: "***REMOVED***",
-  currency: "EUR",
-  intent: "capture"
 };
 
 // --- COMPONENTS ---
@@ -85,18 +77,37 @@ const LegalText = ({ type, htmlContent, isLoading }) => {
 };
 
 // --- DYNAMISCHE CHECKOUT KOMPONENTE (Paypal/Klarna/Manuell) ---
-const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManualSubmit, onSucceed, onProcessing, onFinished, isLoading, user, config }) => {
+const CheckoutAction = ({
+  amount,
+  paymentMethod,
+  actionType,
+  actionData,
+  onManualSubmit,
+  onSucceed,
+  onProcessing,
+  onFinished,
+  isLoading,
+  user,
+  config,
+  csrfToken,
+  paypalClientId
+}) => {
   const paypalRef = React.useRef(null);
   const [isScriptLoaded, setIsScriptLoaded] = React.useState(false);
   const [isKlarnaLoaded, setIsKlarnaLoaded] = React.useState(false);
   const [klarnaToken, setKlarnaToken] = React.useState(null);
+
+  const actionHeaders = {
+    "Content-Type": "application/json",
+    "X-CSRF-Token": csrfToken
+  };
 
   // FIX: Wir machen einen String aus dem actionData Objekt, um Dauerschleifen in React-Hooks zu vermeiden, 
   // da Inline-Objekte in React bei jedem Render als "neu" betrachtet werden.
   const actionDataString = JSON.stringify(actionData);
 
   React.useEffect(() => {
-    if (paymentMethod !== 'paypal') return;
+    if (paymentMethod !== 'paypal' || !paypalClientId) return;
 
     const scriptId = 'paypal-sdk-script';
     let script = document.getElementById(scriptId);
@@ -108,12 +119,12 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
 
     script = document.createElement("script");
     script.id = scriptId;
-    script.src = `https://www.paypal.com/sdk/js?client-id=***REMOVED***&currency=EUR&intent=capture&components=buttons`;
+    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(paypalClientId)}&currency=EUR&intent=capture&components=buttons`;
     script.async = true;
     
     script.onload = () => setIsScriptLoaded(true);
     document.body.appendChild(script);
-  }, [paymentMethod]);
+  }, [paymentMethod, paypalClientId]);
 
   // Klarna Native SDK Laden
   React.useEffect(() => {
@@ -141,7 +152,8 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
           createOrder: () => {
             return fetch("/api/actions.php?action=create_paypal_order", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: actionHeaders,
+              credentials: 'include',
               body: JSON.stringify({ 
                 amount: amount, 
                 actionType: actionType, 
@@ -166,7 +178,8 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
             if (onProcessing) onProcessing(); 
             return fetch("/api/actions.php?action=capture_paypal_order", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: actionHeaders,
+              credentials: 'include',
               body: JSON.stringify({ orderID: data.orderID })
             })
             .then(res => res.json())
@@ -195,7 +208,7 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
       }
     }
   // actionDataString als Dependency, anstatt das direkte Objekt
-  }, [isScriptLoaded, paymentMethod, amount, actionType, actionDataString]);
+  }, [isScriptLoaded, paymentMethod, amount, actionType, actionDataString, csrfToken]);
 
   // 1. SCHRITT: Klarna Session anfordern
   React.useEffect(() => {
@@ -205,7 +218,8 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
         
         fetch("/api/actions.php?action=create_klarna_session", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: actionHeaders,
+            credentials: 'include',
             body: JSON.stringify({ amount, actionType, actionData: JSON.parse(actionDataString) }),
         })
         .then(res => res.json())
@@ -225,7 +239,7 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
         });
     }
   // actionDataString als sichere Dependency
-  }, [isKlarnaLoaded, paymentMethod, amount, actionType, actionDataString]);
+  }, [isKlarnaLoaded, paymentMethod, amount, actionType, actionDataString, csrfToken]);
 
   // 2. SCHRITT: Klarna Widget erst laden, wenn React das Div in den DOM eingefügt hat
   React.useEffect(() => {
@@ -251,7 +265,8 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
         if (res.approved && res.authorization_token) {
             fetch("/api/actions.php?action=place_klarna_order", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: actionHeaders,
+                credentials: 'include',
                 body: JSON.stringify({ authorization_token: res.authorization_token })
             })
             .then(r => r.json())
@@ -281,6 +296,14 @@ const CheckoutAction = ({ amount, paymentMethod, actionType, actionData, onManua
         {isLoading && <Loader2 className="animate-spin" size={20} />}
         Kostenpflichtig bestellen (Guthaben)
       </button>
+    );
+  }
+
+  if (paymentMethod === 'paypal' && !paypalClientId) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        PayPal ist aktuell nicht verfuegbar. Bitte waehle Klarna oder Bankueberweisung.
+      </div>
     );
   }
 
@@ -392,17 +415,56 @@ export default function App() {
 
   const captchaRef = React.useRef(null);
   const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaSiteKey, setCaptchaSiteKey] = useState('');
+  const [paypalClientId, setPaypalClientId] = useState('');
+  const [csrfToken, setCsrfToken] = useState('');
+
+  const resetSessionState = () => {
+    setIsLoggedIn(false);
+    setUser(null);
+    setTransactions([]);
+    setAbos([]);
+    setCards([]);
+    setVisibleTransactions(10);
+    setCsrfToken('');
+  };
+
+  const jsonHeaders = (includeCsrf = false) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (includeCsrf && csrfToken) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+    return headers;
+  };
+
+  const fetchPublicConfig = () => {
+    fetch('/api/data.php?config=1', { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'success') {
+          setCaptchaSiteKey(data.captchaSiteKey || '');
+          setPaypalClientId(data.paypalClientId || '');
+        }
+      })
+      .catch(err => console.error("Config Fehler", err));
+  };
 
   const handleLogout = () => {
-    fetch('/api/data.php?action=logout', { credentials: 'include' })
-      .catch(err => console.error("Logout error", err))
-      .finally(() => {
-        setIsLoggedIn(false);
-        setUser(null);
-        setTransactions([]);
-        setAbos([]);
-        setCards([]);
-        setVisibleTransactions(10);
+    fetch('/api/data.php?action=logout', {
+      method: 'POST',
+      headers: jsonHeaders(true),
+      credentials: 'include'
+    })
+      .then(async response => {
+        const data = await response.json().catch(() => null);
+        if (!response.ok || data?.status !== 'success') {
+          throw new Error(data?.message || 'Logout fehlgeschlagen.');
+        }
+        resetSessionState();
+      })
+      .catch(err => {
+        console.error("Logout error", err);
+        showToast(err.message || 'Logout fehlgeschlagen.');
       });
   };
 
@@ -417,6 +479,7 @@ export default function App() {
       .then(data => {
         if (data.status === 'success') {
           setIsLoggedIn(true);
+          setCsrfToken(data.csrfToken || '');
           setUser(data.data.user);
           setAbos(data.data.abos);
           setCards(data.data.cards);
@@ -440,7 +503,9 @@ export default function App() {
           }));
           setTransactions(mappedTransactions);
         } else {
-          if (isLoggedIn) handleLogout();
+          if (data.status === 'unauthorized') {
+            resetSessionState();
+          }
           if (data.message && data.status !== 'unauthorized') {
              setAuthError(data.message);
           }
@@ -448,8 +513,8 @@ export default function App() {
       })
       .catch(err => {
         console.error("Fehler beim API-Abruf.", err);
-        if (isLoggedIn) handleLogout();
         if (isLoggedIn) {
+        resetSessionState();
         setAuthError("Verbindung zum Server fehlgeschlagen. Bitte erneut einloggen.");
         }
       })
@@ -492,6 +557,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    fetchPublicConfig();
     fetchUserData(false);
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -550,6 +616,11 @@ export default function App() {
     if (e) e.preventDefault();
     setAuthError('');
 
+    if (!captchaSiteKey) {
+      setAuthError('Captcha wird noch geladen. Bitte kurz warten.');
+      return;
+    }
+
     if (!captchaToken) {
       setAuthError('Bitte bestätige, dass du ein Mensch bist (Captcha).');
       return;
@@ -566,6 +637,7 @@ export default function App() {
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
+        setCsrfToken(data.csrfToken || '');
         setIsAuthLoading(false);
         fetchUserData(true); 
       } else {
@@ -691,7 +763,7 @@ export default function App() {
     setIsActionLoading(true);
     fetch('/api/actions.php?action=topup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders(true),
       credentials: 'include',
       body: JSON.stringify({ amount: Number(topUpAmount), paymentMethod: method })
     })
@@ -721,7 +793,7 @@ export default function App() {
     setIsActionLoading(true);
     fetch('/api/actions.php?action=order_card', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders(true),
       credentials: 'include',
       body: JSON.stringify({
         firstName: newCardData.firstName,
@@ -754,7 +826,7 @@ export default function App() {
     setIsActionLoading(true);
     fetch('/api/actions.php?action=block_card', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders(true),
       credentials: 'include',
       body: JSON.stringify({ holderId: lostCardData.card.holderId, cardId: lostCardData.card.id })
     })
@@ -778,7 +850,7 @@ export default function App() {
     setIsActionLoading(true);
     fetch('/api/actions.php?action=reorder_card', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders(true),
       credentials: 'include',
       body: JSON.stringify({
         holderId: lostCardData.card.holderId,
@@ -809,7 +881,7 @@ export default function App() {
     setIsActionLoading(true);
     fetch('/api/actions.php?action=buy_abo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders(true),
       credentials: 'include',
       body: JSON.stringify({
         type: shopData.type,
@@ -1071,11 +1143,15 @@ export default function App() {
 
                 {authMode === 'login' && (
                   <div className="flex justify-center mt-4">
-                    <HCaptcha
-                      sitekey="***REMOVED***" 
-                      onVerify={(token) => setCaptchaToken(token)}
-                      ref={captchaRef}
-                    />
+                    {captchaSiteKey ? (
+                      <HCaptcha
+                        sitekey={captchaSiteKey}
+                        onVerify={(token) => setCaptchaToken(token)}
+                        ref={captchaRef}
+                      />
+                    ) : (
+                      <p className="text-sm text-slate-500">Captcha wird geladen...</p>
+                    )}
                   </div>
                 )}
 
@@ -1617,6 +1693,8 @@ export default function App() {
                         isLoading={isActionLoading}
                         user={user}
                         config={sysPrices}
+                        csrfToken={csrfToken}
+                        paypalClientId={paypalClientId}
                       />
                     </div>
                     <div className="mt-8 pt-6 border-t border-slate-100">
@@ -1804,6 +1882,8 @@ export default function App() {
                 isLoading={isActionLoading}
                 user={user}
                 config={sysPrices}
+                csrfToken={csrfToken}
+                paypalClientId={paypalClientId}
               />
             </div>
           )}
@@ -1979,6 +2059,8 @@ export default function App() {
                 isLoading={isActionLoading}
                 user={user}
                 config={sysPrices}
+                csrfToken={csrfToken}
+                paypalClientId={paypalClientId}
               />
             </div>
           )}
@@ -2140,6 +2222,8 @@ export default function App() {
                 isLoading={isActionLoading}
                 user={user}
                 config={sysPrices}
+                csrfToken={csrfToken}
+                paypalClientId={paypalClientId}
               />
             </div>
           )}

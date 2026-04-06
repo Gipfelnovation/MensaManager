@@ -285,9 +285,11 @@ export default function TeacherApp() {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [captchaValue, setCaptchaValue] = useState(null);
+  const [captchaSiteKey, setCaptchaSiteKey] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
+  const [csrfToken, setCsrfToken] = useState('');
 
   // --- APP STATE ---
   const [activeTab, setActiveTab] = useState('ausgeben'); 
@@ -308,8 +310,21 @@ export default function TeacherApp() {
 
   // --- AUTH LOGIK ---
   useEffect(() => {
+    fetchLoginConfig();
     checkAuthStatus();
   }, []);
+
+  const fetchLoginConfig = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/login.php?config=1`, { credentials: 'include' });
+      const result = await response.json();
+      if (result.captchaSiteKey) {
+        setCaptchaSiteKey(result.captchaSiteKey);
+      }
+    } catch (error) {
+      console.error("Login config failed:", error);
+    }
+  };
 
   const checkAuthStatus = async () => {
     try {
@@ -317,6 +332,7 @@ export default function TeacherApp() {
       const result = await response.json();
       
       if (result.success) {
+        if (result.csrfToken) setCsrfToken(result.csrfToken);
         setIsAuthenticated(true);
         fetchData();
       }
@@ -352,6 +368,7 @@ export default function TeacherApp() {
       const result = await response.json();
 
       if (result.success) {
+        if (result.csrfToken) setCsrfToken(result.csrfToken);
         setIsAuthenticated(true);
         fetchData();
       } else {
@@ -366,11 +383,22 @@ export default function TeacherApp() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${API_BASE}/logout.php`, { credentials: 'include' });
+      const response = await fetch(`${API_BASE}/logout.php`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrfToken },
+        credentials: 'include'
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.success) {
+        throw new Error(result?.error || 'Logout fehlgeschlagen.');
+      }
       setIsAuthenticated(false);
       setStudents([]);
+      setCsrfToken('');
+      setLoginError('');
     } catch (e) {
       console.error("Logout error", e);
+      setLoginError(e.message || 'Logout fehlgeschlagen.');
     }
   };
 
@@ -385,6 +413,7 @@ export default function TeacherApp() {
       }
       const dataPending = await resPending.json();
       if (dataPending.error) throw new Error(dataPending.error);
+      if (dataPending.csrfToken) setCsrfToken(dataPending.csrfToken);
 
       const resActive = await fetch(`${API_BASE}/data.php?action=active_cards`, { credentials: 'include' });
       if (!resActive.ok) {
@@ -393,6 +422,7 @@ export default function TeacherApp() {
       }
       const dataActive = await resActive.json();
       if (dataActive.error) throw new Error(dataActive.error);
+      if (dataActive.csrfToken) setCsrfToken(dataActive.csrfToken);
 
       // Fasse die API Daten zusammen und passe sie an das UI an
       const pendingCards = (dataPending.pendingCards || []).map(s => ({ 
@@ -437,6 +467,7 @@ export default function TeacherApp() {
 
       const response = await fetch(`${API_BASE}/actions.php`, { 
         method: 'POST', 
+        headers: { 'X-CSRF-Token': csrfToken },
         body: formData,
         credentials: 'include'
       });
@@ -481,6 +512,7 @@ export default function TeacherApp() {
 
       const response = await fetch(`${API_BASE}/actions.php`, { 
         method: 'POST', 
+        headers: { 'X-CSRF-Token': csrfToken },
         body: formData,
         credentials: 'include'
       });
@@ -594,10 +626,14 @@ export default function TeacherApp() {
               </div>
 
               <div className="flex justify-center transform scale-90 sm:scale-100 origin-center w-full">
-                <HCaptcha
-                  sitekey="***REMOVED***" 
-                  onVerify={(val) => setCaptchaValue(val)}
-                />
+                {captchaSiteKey ? (
+                  <HCaptcha
+                    sitekey={captchaSiteKey}
+                    onVerify={(val) => setCaptchaValue(val)}
+                  />
+                ) : (
+                  <p className="text-sm text-slate-500">Captcha wird geladen...</p>
+                )}
               </div>
 
               <div>
