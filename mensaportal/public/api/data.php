@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/../../shared/php/mm_security.php';
+require_once __DIR__ . '/mm_bootstrap.php';
 
 mm_apply_cors('portal', ['GET', 'POST', 'OPTIONS'], ['Content-Type', 'X-CSRF-Token']);
 mm_start_session('mensa_portal_login');

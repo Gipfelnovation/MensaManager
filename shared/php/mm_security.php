@@ -28,6 +28,8 @@ function mm_load_env_files()
     $loaded = true;
 
     $files = [
+        mm_repo_root() . DIRECTORY_SEPARATOR . 'shared' . DIRECTORY_SEPARATOR . '.env.local',
+        mm_repo_root() . DIRECTORY_SEPARATOR . 'shared' . DIRECTORY_SEPARATOR . '.env',
         mm_repo_root() . DIRECTORY_SEPARATOR . '.env.local',
         mm_repo_root() . DIRECTORY_SEPARATOR . '.env',
     ];

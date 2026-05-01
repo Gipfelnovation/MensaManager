@@ -5,8 +5,7 @@ import {
   X, AlertCircle, Loader2, ArrowRightLeft, 
   Filter, Check, Camera, RotateCcw, Lock, LogOut
 } from 'lucide-react';
-
-const API_BASE = '/api';
+import { API_BASE } from './runtimeConfig';
 
 // --- ASSIGN CARD MODAL (CAMERA & SCANNER) ---
 const AssignCardModal = ({ assignData, onClose, onComplete, isLoading }) => {

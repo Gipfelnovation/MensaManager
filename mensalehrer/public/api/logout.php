@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/../../shared/php/mm_security.php';
+require_once __DIR__ . '/mm_bootstrap.php';
 require_once __DIR__ . '/config.inc.php';
 
 mm_apply_cors('teacher', ['POST', 'OPTIONS'], ['Content-Type', 'X-CSRF-Token']);

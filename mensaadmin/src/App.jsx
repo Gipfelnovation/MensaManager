@@ -7,8 +7,7 @@ import {
   Filter, Download, Calculator, BarChart3, Bold, Italic, Underline, List, ListOrdered, Type
 } from 'lucide-react';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
-
-const API_BASE = '/api'; 
+import { API_BASE } from './runtimeConfig';
 
 // --- HILFSFUNKTIONEN ---
 const getAboLabel = (type) => {

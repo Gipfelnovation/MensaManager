@@ -5,7 +5,7 @@ if (basename($_SERVER['PHP_SELF']) === basename(__FILE__)) {
     die('Direct access not permitted');
 }
 
-require_once __DIR__ . '/../../../shared/php/mm_security.php';
+require_once __DIR__ . '/mm_bootstrap.php';
 require_once __DIR__ . '/mailer/Exception.php';
 require_once __DIR__ . '/mailer/PHPMailer.php';
 require_once __DIR__ . '/mailer/SMTP.php';

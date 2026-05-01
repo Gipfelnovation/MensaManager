@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/../../../shared/php/mm_security.php';
+require_once __DIR__ . '/mm_bootstrap.php';
 require_once __DIR__ . '/paypal/vendor/autoload.php';
 
 use PaypalServerSdkLib\Authentication\ClientCredentialsAuthCredentialsBuilder;
