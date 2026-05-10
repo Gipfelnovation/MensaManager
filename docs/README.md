@@ -1,5 +1,5 @@
 
-# MensaPay & MensaManager - Dokumentation
+# MensaManager - Dokumentation
 
 Willkommen in der offiziellen Dokumentation für das **MensaManager** Projekt. Diese Dokumentation richtet sich sowohl an Endanwender und Administratoren (Frontend-Nutzung) als auch an Entwickler (technische Backend-Details).
 
