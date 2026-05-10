@@ -12,8 +12,7 @@ Ein integriertes System zur Verwaltung der Schulverpflegung — Benutzerportal f
   - [Admin-Bereich](#admin-bereich)  
 - [Tech-Stack](#tech-stack)  
 - [Datenbank-Struktur](#datenbank-struktur)  
-- [Sicherheitshinweise](#sicherheitshinweise)  
-- [Entwickelt für](#entwickelt-für)  
+- [Sicherheitshinweise](#sicherheitshinweise)   
 - [Contributing & Lizenz](#contributing--lizenz)
 
 ---
@@ -85,14 +84,6 @@ Das System ist nach dem Prinzip "Zero Trust" (Backend vertraut keinen Client-Ein
         
 -   **Architektur (Zero Client-Side Trust):** - Alle Preise, Gebühren und Konditionen werden ausnahmslos serverseitig gegen die Tabelle `default_values` berechnet. Das Backend akzeptiert keine Preisvorgaben aus dem manipulierbaren Frontend. Zahlungs-Intents (PayPal/Klarna) werden sicher in der Backend-Session zwischengespeichert und verifiziert.
 
-# Entwickelt für
-Entwickelt für das Gymnasium Hohenschwangau.
-
 # Contributing & Lizenz
 - Contributions: Issues und PRs über GitHub; Branch-Policy: `main` = produktiv, Feature-Branches nach `feature/<ticket>`.
-- Lizenz: Proprietäre Lizenz (Closed Source).
-
----
-
-## Executive Summary
-Produktionsreifes Konzept für digitales Mensa-Management: Klare Trennung zwischen Benutzer- und Administrationsbereich, strikte serverseitige Preisvalidierung, revisionssichere Transaktions-Architektur, starke Authentifizierung (2FA & Captcha) und eine zentrale, datenbankgesteuerte Konfigurationsbasis. Weiterer Fokus: Lückenlose Datenschutz/DSGVO-Compliance und eine kontinuierlich gehärtete Sicherheitsarchitektur. Der Entwicklungsaufwand für das gesamte Projekt betrug ca. 200–300 Arbeitsstunden. Davon flossen etwa 20 Stunden dediziert in das grundlegende Design der Sicherheitsarchitektur (dies versteht sich unabhängig von den fortlaufenden Sicherheitsimplementierungen während der eigentlichen Feature-Entwicklung).
+- Lizenz: GNU GPLv3.
