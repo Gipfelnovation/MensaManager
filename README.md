@@ -1,5 +1,5 @@
 
-# MensaPay & MensaManager
+# MensaManager
 
 Ein integriertes System zur Verwaltung der Schulverpflegung — Benutzerportal für Eltern/Schüler und Administrationsbereich für die Schule. Unterstützt Mensa-Abos, Prepaid-Guthaben und physische Chipkartenverwaltung.
 
@@ -12,14 +12,13 @@ Ein integriertes System zur Verwaltung der Schulverpflegung — Benutzerportal f
   - [Admin-Bereich](#admin-bereich)  
 - [Tech-Stack](#tech-stack)  
 - [Datenbank-Struktur](#datenbank-struktur)  
-- [Sicherheitshinweise](#sicherheitshinweise)  
-- [Entwickelt für](#entwickelt-für)  
+- [Sicherheitshinweise](#sicherheitshinweise)   
 - [Contributing & Lizenz](#contributing--lizenz)
 
 ---
 
 # Projektübersicht
-MensaPay digitalisiert Bestellung und Bezahlung der Schulverpflegung. Eltern verwalten Guthaben und Abonnements über ein Portal; die Schule steuert Kartenvergabe, überwacht Transaktionen und pflegt zentrale Preis-Konfigurationen. Ziel: transparente Abrechnung, geringe Verwaltungsaufwände, nachvollziehbare Transaktionen.
+MensaManager digitalisiert Bestellung und Bezahlung der Schulverpflegung. Eltern verwalten Guthaben und Abonnements über ein Portal; die Schule steuert Kartenvergabe, überwacht Transaktionen und pflegt zentrale Preis-Konfigurationen. Ziel: transparente Abrechnung, geringe Verwaltungsaufwände, nachvollziehbare Transaktionen.
 
 ➡️ [Zur vollständigen Dokumentation](/docs/README.md)
 
@@ -85,14 +84,6 @@ Das System ist nach dem Prinzip "Zero Trust" (Backend vertraut keinen Client-Ein
         
 -   **Architektur (Zero Client-Side Trust):** - Alle Preise, Gebühren und Konditionen werden ausnahmslos serverseitig gegen die Tabelle `default_values` berechnet. Das Backend akzeptiert keine Preisvorgaben aus dem manipulierbaren Frontend. Zahlungs-Intents (PayPal/Klarna) werden sicher in der Backend-Session zwischengespeichert und verifiziert.
 
-# Entwickelt für
-Entwickelt für das Gymnasium Hohenschwangau.
-
 # Contributing & Lizenz
 - Contributions: Issues und PRs über GitHub; Branch-Policy: `main` = produktiv, Feature-Branches nach `feature/<ticket>`.
-- Lizenz: Proprietäre Lizenz (Closed Source).
-
----
-
-## Executive Summary
-Produktionsreifes Konzept für digitales Mensa-Management: Klare Trennung zwischen Benutzer- und Administrationsbereich, strikte serverseitige Preisvalidierung, revisionssichere Transaktions-Architektur, starke Authentifizierung (2FA & Captcha) und eine zentrale, datenbankgesteuerte Konfigurationsbasis. Weiterer Fokus: Lückenlose Datenschutz/DSGVO-Compliance und eine kontinuierlich gehärtete Sicherheitsarchitektur. Der Entwicklungsaufwand für das gesamte Projekt betrug ca. 200–300 Arbeitsstunden. Davon flossen etwa 20 Stunden dediziert in das grundlegende Design der Sicherheitsarchitektur (dies versteht sich unabhängig von den fortlaufenden Sicherheitsimplementierungen während der eigentlichen Feature-Entwicklung).
+- Dieses Projekt ist lizenziert unter der **GNU GPLv3**. Weitere Details findest du in der [LICENSE](LICENSE) Datei in diesem Repository.
