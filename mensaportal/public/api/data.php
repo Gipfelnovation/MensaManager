@@ -109,7 +109,7 @@ if ($action === 'login') {
         ], 400);
     }
 
-    if ($captchaToken === '') {
+    if (mm_is_hcaptcha_enabled() && $captchaToken === '') {
         mm_json_response([
             'status' => 'error',
             'message' => 'Bitte bestaetige, dass du ein Mensch bist (Captcha).',

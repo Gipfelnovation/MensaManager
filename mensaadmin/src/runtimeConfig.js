@@ -4,7 +4,7 @@ function normalizeApiBase(value) {
   const trimmed = typeof value === 'string' ? value.trim() : '';
 
   if (trimmed === '') {
-    return '/api';
+    return './api';
   }
 
   return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;

@@ -177,17 +177,54 @@ final class MensaInstaller
         ];
     }
 
+    public function validateDatabase(array $input): array
+    {
+        $config = $this->normalizeDatabaseInput($input);
+        $result = $this->validateDatabaseConfig($config);
+        $createdCount = count($result['created_tables']);
+        $seededDefaults = $result['seeded_default_values'];
+
+        $message = 'Verbindung erfolgreich. Die Datenbankstruktur ist bereits vorhanden.';
+        if ($createdCount > 0 && $seededDefaults > 0) {
+            $message = sprintf(
+                'Verbindung erfolgreich. %d Tabellen wurden angelegt und %d Standardwerte initialisiert.',
+                $createdCount,
+                $seededDefaults
+            );
+        } elseif ($createdCount > 0) {
+            $message = sprintf(
+                'Verbindung erfolgreich. %d Tabellen wurden angelegt.',
+                $createdCount
+            );
+        } elseif ($seededDefaults > 0) {
+            $message = sprintf(
+                'Verbindung erfolgreich. Die Tabellen waren bereits vorhanden und %d Standardwerte wurden initialisiert.',
+                $seededDefaults
+            );
+        }
+
+        return [
+            'message' => $message,
+            'server_version' => $result['server_version'],
+            'tables' => $result['tables'],
+            'created_tables' => $result['created_tables'],
+            'seeded_default_values' => $seededDefaults,
+        ];
+    }
+
     public function install(array $input): array
     {
         $this->assertAppsExtracted();
 
         $config = $this->normalizeInstallInput($input);
+        $this->validateInstallConfig($config);
         $plan = $this->buildInstallPlan($config);
 
         $this->writeEnvFile($plan);
         $this->writeRuntimeConfigFiles($plan);
         $this->publishRootPortalFilesIfNeeded($plan);
         $this->writeRootApacheConfig($plan);
+        $adminUser = $this->syncAdminUser($config);
         $this->writeInstallLock($plan);
         $this->writeState([
             'extracted' => true,
@@ -201,6 +238,11 @@ final class MensaInstaller
             'urls' => $plan['public_urls'],
             'cookie_domain' => $plan['env']['MM_COOKIE_DOMAIN'],
             'uses_apache_router' => $plan['mode'] === 'subdomains',
+            'redirect_url' => $plan['public_urls']['admin'],
+            'admin_user' => [
+                'email' => $adminUser['email'],
+                'created' => $adminUser['created'],
+            ],
         ];
     }
 
@@ -217,6 +259,11 @@ final class MensaInstaller
         }
 
         if ($meta['mode'] === 'subfolders') {
+            $subfolderRedirect = $this->resolveSubfolderAliasRedirect($meta, $path);
+            if ($subfolderRedirect !== null) {
+                $this->redirect($subfolderRedirect);
+            }
+
             // Falls der Aufruf ohne Slash am Ende passiert, leiten wir auf die URL inkl. Slash um
             if (preg_match('#/(lehrer|admin)$#', $path)) {
                 $this->redirect($path . '/');
@@ -239,23 +286,17 @@ final class MensaInstaller
     {
         $mode = $this->cleanString($input['install_mode'] ?? 'subfolders');
         if (!in_array($mode, ['subfolders', 'subdomains'], true)) {
-            throw new RuntimeException('Ungültiger Installationsmodus.');
+            throw new RuntimeException('Ungueltiger Installationsmodus.');
         }
 
-        $dbHost = $this->cleanString($input['db_host'] ?? '');
-        $dbName = $this->cleanString($input['db_name'] ?? '');
-        $dbUser = $this->cleanString($input['db_user'] ?? '');
-
-        if ($dbHost === '' || $dbName === '' || $dbUser === '') {
-            throw new RuntimeException('Bitte fülle mindestens Host, Datenbankname und Benutzer für die Datenbank aus.');
-        }
+        $databaseConfig = $this->normalizeDatabaseInput($input);
 
         $baseUrl = $mode === 'subfolders'
             ? $this->normalizeUrl($input['base_url'] ?? '')
             : '';
 
         if ($mode === 'subfolders' && $baseUrl === '') {
-            throw new RuntimeException('Für den Subfolder-Modus wird eine Basis-URL benötigt.');
+            throw new RuntimeException('Fuer den Unterordner-Modus wird eine Basis-URL benoetigt.');
         }
 
         $portalUrl = $mode === 'subdomains'
@@ -269,12 +310,77 @@ final class MensaInstaller
             : $baseUrl;
 
         if ($portalUrl === '' || $teacherUrl === '' || $adminUrl === '') {
-            throw new RuntimeException('Bitte gib alle benötigten URLs für die gewählte Installationsart an.');
+            throw new RuntimeException('Bitte gib alle benoetigten URLs fuer die gewaehlte Installationsart an.');
+        }
+
+        if ($mode === 'subdomains') {
+            $this->assertHostInstallUrl($portalUrl, 'User-URL');
+            $this->assertHostInstallUrl($teacherUrl, 'Lehrer-URL');
+            $this->assertHostInstallUrl($adminUrl, 'Admin-URL');
+
+            $hosts = [
+                $this->extractHost($portalUrl),
+                $this->extractHost($teacherUrl),
+                $this->extractHost($adminUrl),
+            ];
+
+            if (count(array_unique($hosts)) !== count($hosts)) {
+                throw new RuntimeException('User-, Lehrer- und Admin-URL muessen auf unterschiedliche Hosts zeigen.');
+            }
         }
 
         $cookieDomain = $this->cleanString($input['cookie_domain'] ?? '');
         if ($cookieDomain === '') {
             $cookieDomain = $this->deriveCookieDomain($portalUrl, $teacherUrl, $adminUrl);
+        }
+
+        $rememberDays = $this->cleanString($input['remember_days'] ?? '30') ?: '30';
+        if (!ctype_digit($rememberDays) || (int) $rememberDays < 1 || (int) $rememberDays > 3650) {
+            throw new RuntimeException('Remember-Me Tage muessen zwischen 1 und 3650 liegen.');
+        }
+
+        $smtpPort = $this->cleanString($input['smtp_port'] ?? '587') ?: '587';
+        if (!ctype_digit($smtpPort) || (int) $smtpPort < 1 || (int) $smtpPort > 65535) {
+            throw new RuntimeException('Der SMTP-Port muss zwischen 1 und 65535 liegen.');
+        }
+
+        $hcaptchaSiteKey = $this->cleanString($input['hcaptcha_site_key'] ?? '');
+        $hcaptchaSecret = $this->cleanString($input['hcaptcha_secret'] ?? '');
+        if (($hcaptchaSiteKey === '') !== ($hcaptchaSecret === '')) {
+            throw new RuntimeException('Bitte entweder beide hCaptcha-Felder ausfuellen oder beide leer lassen.');
+        }
+
+        $adminFirstName = $this->cleanString($input['admin_first_name'] ?? '');
+        $adminLastName = $this->cleanString($input['admin_last_name'] ?? '');
+        $adminEmail = strtolower($this->cleanString($input['admin_email'] ?? ''));
+        $adminPassword = (string) ($input['admin_password'] ?? '');
+        $adminPasswordConfirm = (string) ($input['admin_password_confirm'] ?? '');
+
+        if ($adminFirstName === '' || $adminLastName === '') {
+            throw new RuntimeException('Bitte gib Vor- und Nachnamen fuer das Admin-Konto an.');
+        }
+
+        if (!filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Bitte gib eine gueltige E-Mail-Adresse fuer das Admin-Konto an.');
+        }
+
+        if (!$this->isStrongPassword($adminPassword)) {
+            throw new RuntimeException('Das Admin-Passwort muss mind. 8 Zeichen, Gross-/Kleinbuchstaben, Zahlen und Sonderzeichen enthalten.');
+        }
+
+        if ($adminPassword !== $adminPasswordConfirm) {
+            throw new RuntimeException('Die Admin-Passwoerter stimmen nicht ueberein.');
+        }
+
+        $mailFromAddress = $this->cleanString($input['mail_from_address'] ?? '');
+        $mailReplyToAddress = $this->cleanString($input['mail_reply_to_address'] ?? '');
+
+        if ($mailFromAddress !== '' && !filter_var($mailFromAddress, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Die Absender-Adresse ist ungueltig.');
+        }
+
+        if ($mailReplyToAddress !== '' && !filter_var($mailReplyToAddress, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Die Reply-To-Adresse ist ungueltig.');
         }
 
         return [
@@ -284,15 +390,15 @@ final class MensaInstaller
             'teacher_url' => $teacherUrl,
             'admin_url' => $adminUrl,
             'cookie_domain' => $cookieDomain,
-            'db_host' => $dbHost,
-            'db_name' => $dbName,
-            'db_user' => $dbUser,
-            'db_password' => $this->cleanMultilineString($input['db_password'] ?? ''),
-            'db_charset' => $this->cleanString($input['db_charset'] ?? 'utf8mb4') ?: 'utf8mb4',
-            'hcaptcha_site_key' => $this->cleanString($input['hcaptcha_site_key'] ?? ''),
-            'hcaptcha_secret' => $this->cleanString($input['hcaptcha_secret'] ?? ''),
+            'db_host' => $databaseConfig['db_host'],
+            'db_name' => $databaseConfig['db_name'],
+            'db_user' => $databaseConfig['db_user'],
+            'db_password' => $databaseConfig['db_password'],
+            'db_charset' => $databaseConfig['db_charset'],
+            'hcaptcha_site_key' => $hcaptchaSiteKey,
+            'hcaptcha_secret' => $hcaptchaSecret,
             'remember_secret' => $this->cleanString($input['remember_secret'] ?? '') ?: bin2hex(random_bytes(32)),
-            'remember_days' => $this->cleanString($input['remember_days'] ?? '30') ?: '30',
+            'remember_days' => $rememberDays,
             'paypal_client_id' => $this->cleanString($input['paypal_client_id'] ?? ''),
             'paypal_client_secret' => $this->cleanString($input['paypal_client_secret'] ?? ''),
             'paypal_env' => in_array($this->cleanString($input['paypal_env'] ?? 'sandbox'), ['sandbox', 'production'], true)
@@ -302,14 +408,383 @@ final class MensaInstaller
             'klarna_password' => $this->cleanString($input['klarna_password'] ?? ''),
             'klarna_url' => $this->normalizeUrl($input['klarna_url'] ?? 'https://api.playground.klarna.com'),
             'smtp_host' => $this->cleanString($input['smtp_host'] ?? ''),
-            'smtp_port' => $this->cleanString($input['smtp_port'] ?? '587') ?: '587',
+            'smtp_port' => $smtpPort,
             'smtp_username' => $this->cleanString($input['smtp_username'] ?? ''),
             'smtp_password' => $this->cleanMultilineString($input['smtp_password'] ?? ''),
             'smtp_encryption' => $this->cleanString($input['smtp_encryption'] ?? 'tls') ?: 'tls',
-            'mail_from_address' => $this->cleanString($input['mail_from_address'] ?? ''),
+            'mail_from_address' => $mailFromAddress,
             'mail_from_name' => $this->cleanString($input['mail_from_name'] ?? 'MensaManager') ?: 'MensaManager',
-            'mail_reply_to_address' => $this->cleanString($input['mail_reply_to_address'] ?? ''),
+            'mail_reply_to_address' => $mailReplyToAddress,
             'mail_reply_to_name' => $this->cleanString($input['mail_reply_to_name'] ?? ''),
+            'admin_first_name' => $adminFirstName,
+            'admin_last_name' => $adminLastName,
+            'admin_email' => $adminEmail,
+            'admin_password' => $adminPassword,
+        ];
+    }
+
+    private function normalizeDatabaseInput(array $input): array
+    {
+        $dbHost = $this->cleanString($input['db_host'] ?? '');
+        $dbName = $this->cleanString($input['db_name'] ?? '');
+        $dbUser = $this->cleanString($input['db_user'] ?? '');
+        $dbPassword = $this->cleanMultilineString($input['db_password'] ?? '');
+        $dbCharset = strtolower($this->cleanString($input['db_charset'] ?? 'utf8mb4') ?: 'utf8mb4');
+
+        if ($dbHost === '' || $dbName === '' || $dbUser === '') {
+            throw new RuntimeException('Bitte fuelle Host, Datenbankname und Benutzer fuer die Datenbank aus.');
+        }
+
+        if (preg_match('/[\r\n;]/', $dbHost)) {
+            throw new RuntimeException('Der Datenbank-Host enthaelt unzulaessige Zeichen.');
+        }
+
+        if (!preg_match('/^[a-z0-9_]+$/i', $dbCharset)) {
+            throw new RuntimeException('Das Datenbank-Charset ist ungueltig.');
+        }
+
+        return [
+            'db_host' => $dbHost,
+            'db_name' => $dbName,
+            'db_user' => $dbUser,
+            'db_password' => $dbPassword,
+            'db_charset' => $dbCharset,
+        ];
+    }
+
+    private function validateInstallConfig(array $config): void
+    {
+        $this->validateDatabaseConfig($config);
+    }
+
+    private function validateDatabaseConfig(array $config): array
+    {
+        $pdo = $this->buildDatabasePdo($config);
+        $requiredTables = $this->requiredDatabaseTables();
+        $schemaStatus = $this->ensureDatabaseSchema($pdo, $config);
+        $missingTables = array_values(array_diff($requiredTables, $schemaStatus['tables']));
+
+        if ($missingTables !== []) {
+            throw new RuntimeException(
+                'Die Datenbankverbindung funktioniert, aber folgende Tabellen fehlen: ' . implode(', ', $missingTables)
+            );
+        }
+
+        return [
+            'server_version' => (string) $pdo->getAttribute(PDO::ATTR_SERVER_VERSION),
+            'tables' => $requiredTables,
+            'missing_tables' => [],
+            'created_tables' => $schemaStatus['created_tables'],
+            'seeded_default_values' => $schemaStatus['seeded_default_values'],
+        ];
+    }
+
+    private function buildDatabasePdo(array $config): PDO
+    {
+        $dsn = sprintf(
+            'mysql:host=%s;dbname=%s;charset=%s',
+            $config['db_host'],
+            $config['db_name'],
+            $config['db_charset']
+        );
+
+        try {
+            return new PDO($dsn, $config['db_user'], $config['db_password'], [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+                PDO::ATTR_TIMEOUT => 8,
+            ]);
+        } catch (Throwable $exception) {
+            throw new RuntimeException('Die Datenbankverbindung konnte nicht hergestellt werden: ' . $exception->getMessage(), 0, $exception);
+        }
+    }
+
+    private function requiredDatabaseTables(): array
+    {
+        return [
+            'users',
+            'accounts',
+            'card_holders',
+            'chip_cards',
+            'subscriptions',
+            'account_transactions',
+            'default_values',
+            'login_attempts',
+            'securitytokens',
+            'unpaid_transactions',
+        ];
+    }
+
+    private function ensureDatabaseSchema(PDO $pdo, array $config): array
+    {
+        $requiredTables = $this->requiredDatabaseTables();
+        $existingBefore = $this->findExistingTables($pdo, $requiredTables);
+
+        try {
+            foreach ($this->databaseSchemaStatements($config['db_charset']) as $statement) {
+                $pdo->exec($statement);
+            }
+            $seededDefaultValues = $this->seedDefaultValues($pdo);
+        } catch (Throwable $exception) {
+            throw new RuntimeException(
+                'Die Datenbankverbindung funktioniert, aber die Tabellen oder Standardwerte konnten nicht angelegt werden: ' . $exception->getMessage(),
+                0,
+                $exception
+            );
+        }
+
+        $existingAfter = $this->findExistingTables($pdo, $requiredTables);
+
+        return [
+            'tables' => $existingAfter,
+            'created_tables' => array_values(array_diff($existingAfter, $existingBefore)),
+            'seeded_default_values' => $seededDefaultValues,
+        ];
+    }
+
+    private function findExistingTables(PDO $pdo, array $requiredTables): array
+    {
+        $statement = $pdo->query(
+            'SELECT table_name
+             FROM information_schema.tables
+             WHERE table_schema = DATABASE()'
+        );
+
+        $existing = [];
+        while ($row = $statement->fetch(PDO::FETCH_ASSOC)) {
+            $tableName = (string) ($row['table_name'] ?? '');
+            if ($tableName !== '') {
+                $existing[$tableName] = true;
+            }
+        }
+
+        $resolved = [];
+        foreach ($requiredTables as $table) {
+            if (isset($existing[$table])) {
+                $resolved[] = $table;
+            }
+        }
+
+        return $resolved;
+    }
+
+    private function databaseSchemaStatements(string $charset): array
+    {
+        $tableOptions = sprintf('ENGINE=InnoDB DEFAULT CHARSET=%s', $charset);
+
+        return [
+            "CREATE TABLE IF NOT EXISTS `users` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `vorname` VARCHAR(120) NOT NULL,
+                `nachname` VARCHAR(120) NOT NULL,
+                `email` VARCHAR(190) NOT NULL,
+                `passwort` VARCHAR(255) NOT NULL,
+                `status` VARCHAR(20) NOT NULL DEFAULT 'USER',
+                `totp_secret` VARCHAR(128) DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                UNIQUE KEY `uniq_users_email` (`email`),
+                KEY `idx_users_status` (`status`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `accounts` (
+                `account_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` INT UNSIGNED NOT NULL,
+                `balance` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                PRIMARY KEY (`account_id`),
+                UNIQUE KEY `uniq_accounts_user_id` (`user_id`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `card_holders` (
+                `holder_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `first_name` VARCHAR(120) NOT NULL,
+                `last_name` VARCHAR(120) NOT NULL,
+                `class` VARCHAR(80) NOT NULL DEFAULT '',
+                `created_by` INT UNSIGNED NOT NULL,
+                `holder_image` LONGBLOB NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`holder_id`),
+                KEY `idx_card_holders_created_by` (`created_by`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `chip_cards` (
+                `card_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `card_uid` VARCHAR(191) NOT NULL,
+                `account_id` INT UNSIGNED NOT NULL,
+                `holder_id` INT UNSIGNED NOT NULL,
+                `issued_by` INT UNSIGNED DEFAULT NULL,
+                `issued_at` DATE NOT NULL,
+                `active` TINYINT(1) NOT NULL DEFAULT 1,
+                `deactivated_at` DATE DEFAULT NULL,
+                PRIMARY KEY (`card_id`),
+                KEY `idx_chip_cards_card_uid` (`card_uid`),
+                KEY `idx_chip_cards_account_id` (`account_id`),
+                KEY `idx_chip_cards_holder_id` (`holder_id`),
+                KEY `idx_chip_cards_active` (`active`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `subscriptions` (
+                `subscription_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `holder_id` INT UNSIGNED NOT NULL,
+                `type` VARCHAR(32) NOT NULL,
+                `transaction_nr` VARCHAR(191) DEFAULT NULL,
+                `weekdays` VARCHAR(191) NOT NULL,
+                `start_date` DATE NOT NULL,
+                `end_date` DATE DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`subscription_id`),
+                KEY `idx_subscriptions_holder_id` (`holder_id`),
+                KEY `idx_subscriptions_dates` (`start_date`, `end_date`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `account_transactions` (
+                `transaction_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `account_id` INT UNSIGNED NOT NULL,
+                `amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                `transaction_type` VARCHAR(64) NOT NULL,
+                `description` TEXT NULL,
+                `occurred_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `admin_id` INT UNSIGNED DEFAULT NULL,
+                `card_id` VARCHAR(191) DEFAULT NULL,
+                PRIMARY KEY (`transaction_id`),
+                KEY `idx_account_transactions_account_id` (`account_id`),
+                KEY `idx_account_transactions_type` (`transaction_type`),
+                KEY `idx_account_transactions_occurred_at` (`occurred_at`),
+                KEY `idx_account_transactions_card_id` (`card_id`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `default_values` (
+                `name` VARCHAR(191) NOT NULL,
+                `def_value` MEDIUMTEXT NOT NULL,
+                PRIMARY KEY (`name`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `login_attempts` (
+                `ip_address` VARCHAR(45) NOT NULL,
+                `attempts` INT UNSIGNED NOT NULL DEFAULT 0,
+                `last_attempt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`ip_address`),
+                KEY `idx_login_attempts_last_attempt` (`last_attempt`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `securitytokens` (
+                `identifier` VARCHAR(64) NOT NULL,
+                `user_id` INT UNSIGNED NOT NULL,
+                `securitytoken` VARCHAR(128) NOT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (`identifier`),
+                KEY `idx_securitytokens_user_id` (`user_id`)
+            ) {$tableOptions}",
+            "CREATE TABLE IF NOT EXISTS `unpaid_transactions` (
+                `unpaid_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `account_id` INT UNSIGNED NOT NULL,
+                `transaction_id` INT UNSIGNED NOT NULL,
+                `subscription_id` INT UNSIGNED DEFAULT NULL,
+                `payment_pin` VARCHAR(32) NOT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`unpaid_id`),
+                KEY `idx_unpaid_transactions_account_id` (`account_id`),
+                KEY `idx_unpaid_transactions_transaction_id` (`transaction_id`),
+                KEY `idx_unpaid_transactions_subscription_id` (`subscription_id`),
+                KEY `idx_unpaid_transactions_payment_pin` (`payment_pin`)
+            ) {$tableOptions}",
+        ];
+    }
+
+    private function seedDefaultValues(PDO $pdo): int
+    {
+        $defaults = [
+            'full_year_per_day' => '120.00',
+            'half_year_per_day' => '80.00',
+            'single_entry' => '0.00',
+            'single_entry_reuse' => '0.00',
+            'card_deposit' => '5.00',
+            'school_name' => '',
+            'school_iban' => '',
+            'school_bic' => '',
+            'imprint' => '',
+            'privacy' => '',
+        ];
+
+        $existingStatement = $pdo->query('SELECT name FROM default_values');
+        $existing = [];
+
+        while ($row = $existingStatement->fetch(PDO::FETCH_ASSOC)) {
+            $name = (string) ($row['name'] ?? '');
+            if ($name !== '') {
+                $existing[$name] = true;
+            }
+        }
+
+        $insert = $pdo->prepare('INSERT INTO default_values (name, def_value) VALUES (?, ?)');
+        $created = 0;
+
+        foreach ($defaults as $name => $value) {
+            if (isset($existing[$name])) {
+                continue;
+            }
+
+            $insert->execute([$name, $value]);
+            $created++;
+        }
+
+        return $created;
+    }
+
+    private function syncAdminUser(array $config): array
+    {
+        $pdo = $this->buildDatabasePdo($config);
+        $passwordHash = password_hash($config['admin_password'], PASSWORD_DEFAULT);
+        $created = false;
+
+        try {
+            $pdo->beginTransaction();
+
+            $select = $pdo->prepare('SELECT id, status FROM users WHERE email = ? LIMIT 1');
+            $select->execute([$config['admin_email']]);
+            $existingUser = $select->fetch(PDO::FETCH_ASSOC);
+
+            if ($existingUser) {
+                if (($existingUser['status'] ?? '') !== 'ADMIN') {
+                    throw new RuntimeException('Die Admin-E-Mail existiert bereits mit einer anderen Rolle. Bitte waehle eine andere Adresse.');
+                }
+
+                $update = $pdo->prepare(
+                    'UPDATE users
+                     SET vorname = ?, nachname = ?, passwort = ?, status = ?, totp_secret = NULL
+                     WHERE id = ?'
+                );
+                $update->execute([
+                    $config['admin_first_name'],
+                    $config['admin_last_name'],
+                    $passwordHash,
+                    'ADMIN',
+                    (int) $existingUser['id'],
+                ]);
+            } else {
+                $insert = $pdo->prepare(
+                    "INSERT INTO users (vorname, nachname, email, passwort, status, totp_secret)
+                     VALUES (?, ?, ?, ?, 'ADMIN', NULL)"
+                );
+                $insert->execute([
+                    $config['admin_first_name'],
+                    $config['admin_last_name'],
+                    $config['admin_email'],
+                    $passwordHash,
+                ]);
+                $created = true;
+            }
+
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            if ($exception instanceof RuntimeException) {
+                throw $exception;
+            }
+
+            throw new RuntimeException('Das Admin-Konto konnte nicht angelegt werden: ' . $exception->getMessage(), 0, $exception);
+        }
+
+        return [
+            'email' => $config['admin_email'],
+            'created' => $created,
         ];
     }
 
@@ -358,9 +833,9 @@ final class MensaInstaller
         ];
 
         $runtimeConfig = [
-            'user' => ['apiBase' => '/api'],
-            'lehrer' => ['apiBase' => $config['mode'] === 'subfolders' ? '/lehrer/api' : '/api'],
-            'admin' => ['apiBase' => $config['mode'] === 'subfolders' ? '/admin/api' : '/api'],
+            'user' => ['apiBase' => './api'],
+            'lehrer' => ['apiBase' => './api'],
+            'admin' => ['apiBase' => './api'],
         ];
 
         return [
@@ -475,6 +950,7 @@ final class MensaInstaller
     private function writeRootApacheConfig(array $plan): void
     {
         $basePath = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? ''), '/\\');
+        $basePrefix = $basePath === '' ? '' : $basePath;
 
         $contents = [
             'Options -Indexes',
@@ -483,9 +959,30 @@ final class MensaInstaller
             '<IfModule mod_rewrite.c>',
             'RewriteEngine On',
             'RewriteRule ^(?:shared|installer)(?:/|$) - [F,L]',
-            // Verwende %{REQUEST_URI} anstatt nur $1, um den absoluten Apache-Pfad zu unterdrücken
-            'RewriteRule ^(lehrer|admin)$ %{REQUEST_URI}/ [R=302,L]',
         ];
+
+        if ($plan['mode'] === 'subfolders') {
+            $contents[] = 'RewriteRule ^(lehrer|admin)$ ' . ($basePrefix !== '' ? $basePrefix : '') . '/$1/ [R=302,L]';
+
+            $subfolderAliasHosts = $this->deriveSubfolderAliasHosts($plan['public_urls']['user']);
+            $subfolderRedirects = [
+                'teacher' => rtrim($plan['public_urls']['lehrer'], '/') . '/',
+                'admin' => rtrim($plan['public_urls']['admin'], '/') . '/',
+            ];
+
+            foreach (['teacher', 'admin'] as $role) {
+                if (($subfolderAliasHosts[$role] ?? '') === '') {
+                    continue;
+                }
+
+                $prefix = $role === 'teacher' ? 'lehrer' : 'admin';
+                $contents[] = '';
+                $contents[] = 'RewriteCond %{HTTP_HOST} ' . $this->buildHostPattern($subfolderAliasHosts[$role]) . ' [NC]';
+                $contents[] = 'RewriteRule ^' . $prefix . '/?(.*)$ ' . $subfolderRedirects[$role] . '$1 [R=302,L,NE]';
+                $contents[] = 'RewriteCond %{HTTP_HOST} ' . $this->buildHostPattern($subfolderAliasHosts[$role]) . ' [NC]';
+                $contents[] = 'RewriteRule ^(.*)$ ' . $subfolderRedirects[$role] . '$1 [R=302,L,NE]';
+            }
+        }
 
         if ($plan['mode'] === 'subdomains') {
             $hostRules = [
@@ -497,10 +994,24 @@ final class MensaInstaller
             foreach ($hostRules as $appName => $pattern) {
                 $contents[] = '';
                 $contents[] = 'RewriteCond %{HTTP_HOST} ' . $pattern . ' [NC]';
-                $contents[] = 'RewriteRule ^runtime-config\.js$ ' . $basePath . '/' . $appName . '/runtime-config.js [L]';
+                $contents[] = 'RewriteRule ^runtime-config\.js$ ' . $basePrefix . '/' . $appName . '/runtime-config.js [END]';
                 $contents[] = 'RewriteCond %{HTTP_HOST} ' . $pattern . ' [NC]';
-                $contents[] = 'RewriteRule ^(assets|api)(/.*)?$ ' . $basePath . '/' . $appName . '/$1$2 [L]';
+                $contents[] = 'RewriteRule ^assets(?:/(.*))?$ ' . $basePrefix . '/' . $appName . '/assets/$1 [END]';
+                $contents[] = 'RewriteCond %{HTTP_HOST} ' . $pattern . ' [NC]';
+                
+                if ($appName === 'user') {
+                    // Der absolute Dateipfad (%{DOCUMENT_ROOT}) zwingt Apache, das Skript direkt
+                    // an den PHP-Handler zu übergeben. Das löst das 404-Problem auf der Hauptdomain.
+                    $contents[] = 'RewriteRule ^api(?:/(.*))?$ %{DOCUMENT_ROOT}' . $basePrefix . '/user/api/$1 [L,QSA]';
+                } else {
+                    // Admin und Lehrer funktionieren bereits fehlerfrei mit der bisherigen Logik.
+                    $contents[] = 'RewriteRule ^api(?:/(.*))?$ ' . $basePrefix . '/' . $appName . '/api/$1 [END,QSA]';
+                }
             }
+
+            $contents[] = '';
+            //$contents[] = 'RewriteCond %{HTTP_HOST} ' . $hostRules['user'] . ' [NC]';
+            $contents[] = 'RewriteRule ^(?:lehrer|admin)(?:/.*)?$ - [F,L]';
         }
 
         $contents[] = '</IfModule>';
@@ -1094,6 +1605,63 @@ PHP;
         return implode('.', array_reverse($commonParts));
     }
 
+    private function deriveSubfolderAliasHosts(string $baseUrl): array
+    {
+        $host = $this->extractHost($baseUrl);
+        $domainBase = $this->suggestDomainBase($host);
+
+        if ($host === '' || $domainBase === '' || filter_var($host, FILTER_VALIDATE_IP) || $host === 'localhost') {
+            return [];
+        }
+
+        return [
+            'teacher' => 'lehrer.' . $domainBase,
+            'admin' => 'admin.' . $domainBase,
+        ];
+    }
+
+    private function resolveSubfolderAliasRedirect(array $meta, string $path): ?string
+    {
+        $publicUserUrl = (string) ($meta['public_urls']['user'] ?? '');
+        $publicTeacherUrl = (string) ($meta['public_urls']['lehrer'] ?? '');
+        $publicAdminUrl = (string) ($meta['public_urls']['admin'] ?? '');
+        $aliasHosts = $this->deriveSubfolderAliasHosts($publicUserUrl);
+        $host = $this->detectHost();
+
+        if (($aliasHosts['teacher'] ?? '') === $host) {
+            return $this->buildSubfolderAliasRedirectTarget($publicTeacherUrl, $path, 'lehrer');
+        }
+
+        if (($aliasHosts['admin'] ?? '') === $host) {
+            return $this->buildSubfolderAliasRedirectTarget($publicAdminUrl, $path, 'admin');
+        }
+
+        return null;
+    }
+
+    private function buildSubfolderAliasRedirectTarget(string $targetBaseUrl, string $path, string $prefix): string
+    {
+        $targetBaseUrl = rtrim($targetBaseUrl, '/') . '/';
+        $normalizedPath = ltrim($path, '/');
+        $normalizedPrefix = trim($prefix, '/');
+
+        if ($normalizedPath === '' || $normalizedPath === 'index.php') {
+            $target = $targetBaseUrl;
+        } elseif ($normalizedPath === $normalizedPrefix || str_starts_with($normalizedPath, $normalizedPrefix . '/')) {
+            $suffix = substr($normalizedPath, strlen($normalizedPrefix));
+            $target = rtrim($targetBaseUrl, '/') . ($suffix === '' ? '/' : $suffix);
+        } else {
+            $target = $targetBaseUrl . $normalizedPath;
+        }
+
+        $query = (string) ($_SERVER['QUERY_STRING'] ?? '');
+        if ($query !== '') {
+            $target .= (str_contains($target, '?') ? '&' : '?') . $query;
+        }
+
+        return $target;
+    }
+
     private function extractHost(string $url): string
     {
         $host = parse_url($url, PHP_URL_HOST);
@@ -1194,6 +1762,20 @@ PHP;
     private function cleanMultilineString(string $value): string
     {
         return trim(str_replace(["\r", "\n"], '', $value));
+    }
+
+    private function isStrongPassword(string $password): bool
+    {
+        return (bool) preg_match('/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/', $password);
+    }
+
+    private function assertHostInstallUrl(string $url, string $label): void
+    {
+        $path = (string) parse_url($url, PHP_URL_PATH);
+
+        if ($path !== '' && $path !== '/') {
+            throw new RuntimeException($label . ' darf im Subdomain-Modus keinen Unterpfad enthalten.');
+        }
     }
 
     private function formatEnvLine(string $key, string $value): string

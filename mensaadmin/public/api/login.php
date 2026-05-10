@@ -180,7 +180,7 @@ if ($action === 'verify_2fa') {
 // ==========================================
 if ($action === 'login') {
 $captchaResponse = $input['captcha'] ?? '';
-if (empty($captchaResponse)) {
+if (mm_is_hcaptcha_enabled() && empty($captchaResponse)) {
     http_response_code(400);
         echo json_encode(['success' => false, 'error' => 'Bitte bestätige, dass du kein Roboter bist.']);
     exit;

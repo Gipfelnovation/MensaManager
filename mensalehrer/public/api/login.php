@@ -56,7 +56,7 @@ if ($attempts !== false && (int) $attempts >= $maxAttempts) {
     ], 429);
 }
 
-if ($captcha === '') {
+if (mm_is_hcaptcha_enabled() && $captcha === '') {
     mm_json_response([
         'success' => false,
         'error' => 'Bitte bestaetige, dass du kein Roboter bist (Captcha fehlt).',

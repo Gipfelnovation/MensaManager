@@ -23,6 +23,20 @@ import {
 import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { apiUrl } from './runtimeConfig';
 
+// Eigener Fetch-Wrapper: Versucht bei einem 404 Error die URL mit "/user/api/" statt "/api/" erneut
+const apiFetch = async (url, options) => {
+  let response = await fetch(url, options);
+  if (response.status === 404) {
+    const fallbackUrl = typeof url === 'string' 
+      ? url.replace('/api/', '/user/api/') 
+      : url;
+    if (fallbackUrl !== url) {
+      response = await fetch(fallbackUrl, options);
+    }
+  }
+  return response;
+};
+
 // Map für dynamisches Zuweisen von Icons aus dem Backend
 const IconMap = {
   Utensils, Wallet, Banknote, CalendarDays, CreditCard
@@ -151,7 +165,7 @@ const CheckoutAction = ({
         window.paypal.Buttons({
           style: { layout: "vertical", shape: "rect", color: 'gold' },
           createOrder: () => {
-            return fetch(apiUrl('/actions.php?action=create_paypal_order'), {
+            return apiFetch(apiUrl('/actions.php?action=create_paypal_order'), {
               method: "POST",
               headers: actionHeaders,
               credentials: 'include',
@@ -177,7 +191,7 @@ const CheckoutAction = ({
           },
           onApprove: (data, actions) => {
             if (onProcessing) onProcessing(); 
-            return fetch(apiUrl('/actions.php?action=capture_paypal_order'), {
+            return apiFetch(apiUrl('/actions.php?action=capture_paypal_order'), {
               method: "POST",
               headers: actionHeaders,
               credentials: 'include',
@@ -217,7 +231,7 @@ const CheckoutAction = ({
         if (onProcessing) onProcessing();
         setKlarnaToken(null); // Reset falls sich Parameter ändern
         
-        fetch(apiUrl('/actions.php?action=create_klarna_session'), {
+        apiFetch(apiUrl('/actions.php?action=create_klarna_session'), {
             method: "POST",
             headers: actionHeaders,
             credentials: 'include',
@@ -264,7 +278,7 @@ const CheckoutAction = ({
     if (onProcessing) onProcessing();
     window.Klarna.Payments.authorize({}, (res) => {
         if (res.approved && res.authorization_token) {
-            fetch(apiUrl('/actions.php?action=place_klarna_order'), {
+            apiFetch(apiUrl('/actions.php?action=place_klarna_order'), {
                 method: "POST",
                 headers: actionHeaders,
                 credentials: 'include',
@@ -439,7 +453,7 @@ export default function App() {
   };
 
   const fetchPublicConfig = () => {
-    fetch(apiUrl('/data.php?config=1'), { credentials: 'include' })
+    apiFetch(apiUrl('/data.php?config=1'), { credentials: 'include' })
       .then(r => r.json())
       .then(data => {
         if (data.status === 'success') {
@@ -452,7 +466,7 @@ export default function App() {
 
     const handleLogout = async () => {
     try {
-      const response = await fetch(apiUrl('/data.php?action=logout'), {
+      const response = await apiFetch(apiUrl('/data.php?action=logout'), {
         method: 'POST',
         headers: { 'X-CSRF-Token': csrfToken },
         credentials: 'include'
@@ -482,7 +496,7 @@ export default function App() {
   const fetchUserData = (showLiquid = false) => {
     if (showLiquid) setIsLoading(true);
     
-    fetch(apiUrl('/data.php?action=getData'), { credentials: 'include' })
+    apiFetch(apiUrl('/data.php?action=getData'), { credentials: 'include' })
       .then(response => {
         if (!response.ok && response.status !== 401) throw new Error('Netzwerk-Antwort war nicht ok');
         return response.json();
@@ -542,7 +556,7 @@ export default function App() {
   const fetchImprint = () => {
     if (legalContent.impressum) return; 
     setIsLegalLoading(true);
-    fetch(apiUrl('/data.php?action=getLegalContent&type=imprint'))
+    apiFetch(apiUrl('/data.php?action=getLegalContent&type=imprint'))
       .then(r => r.json())
       .then(data => {
         if (data.status === 'success') {
@@ -556,7 +570,7 @@ export default function App() {
   const fetchPrivacy = () => {
     if (legalContent.datenschutz) return; 
     setIsLegalLoading(true);
-    fetch(apiUrl('/data.php?action=getLegalContent&type=privacy'))
+    apiFetch(apiUrl('/data.php?action=getLegalContent&type=privacy'))
       .then(r => r.json())
       .then(data => {
         if (data.status === 'success') {
@@ -639,7 +653,7 @@ export default function App() {
 
     setIsAuthLoading(true);
 
-    fetch(apiUrl('/data.php?action=login'), {
+    apiFetch(apiUrl('/data.php?action=login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -681,7 +695,7 @@ export default function App() {
       return;
     }
     setIsAuthLoading(true);
-    fetch(apiUrl('/data.php?action=register'), {
+    apiFetch(apiUrl('/data.php?action=register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -714,7 +728,7 @@ export default function App() {
     setAuthError('');
     setResetSuccessMsg('');
     setIsAuthLoading(true);
-    fetch(apiUrl('/data.php?action=forgot_password'), {
+    apiFetch(apiUrl('/data.php?action=forgot_password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -749,7 +763,7 @@ export default function App() {
       return;
     }
     setIsAuthLoading(true);
-    fetch(apiUrl('/data.php?action=reset_password'), {
+    apiFetch(apiUrl('/data.php?action=reset_password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -772,7 +786,7 @@ export default function App() {
 
   const handleManualTopUp = (method) => {
     setIsActionLoading(true);
-    fetch(apiUrl('/actions.php?action=topup'), {
+    apiFetch(apiUrl('/actions.php?action=topup'), {
       method: 'POST',
       headers: jsonHeaders(true),
       credentials: 'include',
@@ -802,7 +816,7 @@ export default function App() {
 
   const handleManualOrderCard = (method) => {
     setIsActionLoading(true);
-    fetch(apiUrl('/actions.php?action=order_card'), {
+    apiFetch(apiUrl('/actions.php?action=order_card'), {
       method: 'POST',
       headers: jsonHeaders(true),
       credentials: 'include',
@@ -835,7 +849,7 @@ export default function App() {
 
   const handleBlockCard = () => {
     setIsActionLoading(true);
-    fetch(apiUrl('/actions.php?action=block_card'), {
+    apiFetch(apiUrl('/actions.php?action=block_card'), {
       method: 'POST',
       headers: jsonHeaders(true),
       credentials: 'include',
@@ -859,7 +873,7 @@ export default function App() {
 
   const handleManualReorderCard = (method) => {
     setIsActionLoading(true);
-    fetch(apiUrl('/actions.php?action=reorder_card'), {
+    apiFetch(apiUrl('/actions.php?action=reorder_card'), {
       method: 'POST',
       headers: jsonHeaders(true),
       credentials: 'include',
@@ -890,7 +904,7 @@ export default function App() {
 
   const handleManualBuyAbo = (method) => {
     setIsActionLoading(true);
-    fetch(apiUrl('/actions.php?action=buy_abo'), {
+    apiFetch(apiUrl('/actions.php?action=buy_abo'), {
       method: 'POST',
       headers: jsonHeaders(true),
       credentials: 'include',

@@ -328,6 +328,10 @@ function mm_get_real_ip()
 
 function mm_verify_hcaptcha_token($token, $ipAddress)
 {
+    if (!mm_is_hcaptcha_enabled()) {
+        return true;
+    }
+
     $secret = mm_env_required('MM_HCAPTCHA_SECRET');
     $response = file_get_contents('https://hcaptcha.com/siteverify', false, stream_context_create([
         'http' => [
@@ -352,6 +356,11 @@ function mm_verify_hcaptcha_token($token, $ipAddress)
 function mm_get_hcaptcha_site_key()
 {
     return (string) mm_env('MM_HCAPTCHA_SITE_KEY', '');
+}
+
+function mm_is_hcaptcha_enabled()
+{
+    return mm_env('MM_HCAPTCHA_SITE_KEY', '') !== '' && mm_env('MM_HCAPTCHA_SECRET', '') !== '';
 }
 
 function mm_get_paypal_client_id()
@@ -399,7 +408,7 @@ function mm_get_db_config()
         'host' => mm_env_required('MM_DB_HOST'),
         'name' => mm_env_required('MM_DB_NAME'),
         'user' => mm_env_required('MM_DB_USER'),
-        'password' => mm_env_required('MM_DB_PASSWORD'),
+        'password' => (string) mm_env('MM_DB_PASSWORD', ''),
         'charset' => (string) mm_env('MM_DB_CHARSET', 'utf8mb4'),
     ];
 }

@@ -37,6 +37,17 @@ if ($action !== '') {
             exit;
         }
 
+        if ($action === 'validate-db') {
+            $result = $installer->validateDatabase($_POST);
+
+            echo json_encode([
+                'status' => 'success',
+                'message' => $result['message'],
+                'result' => $result,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
         if ($action === 'install') {
             $result = $installer->install($_POST);
 
@@ -547,9 +558,10 @@ $defaultCookieDomain = $defaults['cookie_domain'];
               <div class="steps" id="step-pills">
                 <div class="step-pill active">1. Bereitstellung</div>
                 <div class="step-pill">2. Datenbank</div>
-                <div class="step-pill">3. Sicherheit & Mail</div>
-                <div class="step-pill">4. Payments</div>
-                <div class="step-pill">5. Abschluss</div>
+                <div class="step-pill">3. Admin</div>
+                <div class="step-pill">4. Sicherheit & Mail</div>
+                <div class="step-pill">5. Payments</div>
+                <div class="step-pill">6. Abschluss</div>
               </div>
 
               <form id="installer-form">
@@ -637,9 +649,44 @@ $defaultCookieDomain = $defaults['cookie_domain'];
                       <input id="db_password" name="db_password" type="password">
                     </div>
                   </div>
+                  <div class="actions">
+                    <div class="hint">Der Installer prueft die Verbindung, legt fehlende Tabellen an und initialisiert Standardwerte.</div>
+                    <button type="button" class="btn-secondary" id="db-check-button">DB pruefen und vorbereiten</button>
+                  </div>
                 </div>
 
                 <div class="step-panel" data-step="2">
+                  <h2 class="status-title">Admin-Konto anlegen</h2>
+                  <p class="hint">
+                    Dieses Konto wird mit der Rolle <code>ADMIN</code> in der Tabelle <code>users</code> angelegt
+                    oder bei gleicher Admin-E-Mail aktualisiert. Die 2FA-Einrichtung startet danach beim ersten Login.
+                  </p>
+                  <div class="fieldset two">
+                    <div class="field">
+                      <label for="admin_first_name">Vorname</label>
+                      <input id="admin_first_name" name="admin_first_name" type="text" required>
+                    </div>
+                    <div class="field">
+                      <label for="admin_last_name">Nachname</label>
+                      <input id="admin_last_name" name="admin_last_name" type="text" required>
+                    </div>
+                    <div class="field">
+                      <label for="admin_email">E-Mail</label>
+                      <input id="admin_email" name="admin_email" type="email" required>
+                    </div>
+                    <div class="field">
+                      <label for="admin_password">Passwort</label>
+                      <input id="admin_password" name="admin_password" type="password" required>
+                      <div class="hint">Mindestens 8 Zeichen mit Gross-/Kleinbuchstaben, Zahl und Sonderzeichen.</div>
+                    </div>
+                    <div class="field">
+                      <label for="admin_password_confirm">Passwort wiederholen</label>
+                      <input id="admin_password_confirm" name="admin_password_confirm" type="password" required>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="step-panel" data-step="3">
                   <h2 class="status-title">Sicherheit und Mail</h2>
                   <div class="fieldset two">
                     <div class="field">
@@ -705,7 +752,7 @@ $defaultCookieDomain = $defaults['cookie_domain'];
                   </div>
                 </div>
 
-                <div class="step-panel" data-step="3">
+                <div class="step-panel" data-step="4">
                   <h2 class="status-title">Zahlungsanbieter</h2>
                   <div class="fieldset two">
                     <div class="field">
@@ -738,11 +785,11 @@ $defaultCookieDomain = $defaults['cookie_domain'];
                   </div>
                 </div>
 
-                <div class="step-panel" data-step="4">
+                <div class="step-panel" data-step="5">
                   <h2 class="status-title">Abschluss</h2>
                   <p class="hint">
                     Beim letzten Schritt schreibt der Installer die vollständige <code>shared/.env</code>,
-                    aktualisiert die API-Basen aller drei Frontends und sperrt den <code>/shared</code>-Ordner gegen Webzugriff.
+                    aktualisiert die API-Basen aller drei Frontends, legt das Admin-Konto an und sperrt den <code>/shared</code>-Ordner gegen Webzugriff.
                   </p>
                   <div class="summary" id="review-summary">
                     <div class="summary-line"><span>Modus</span><span id="summary-mode">Unterordner</span></div>
@@ -881,6 +928,7 @@ $defaultCookieDomain = $defaults['cookie_domain'];
         const successBox = document.getElementById('form-success');
         const modeInputs = Array.from(document.querySelectorAll('input[name="install_mode"]'));
         const modeGroups = Array.from(document.querySelectorAll('.mode-group'));
+        const dbCheckButton = document.getElementById('db-check-button');
         let currentStep = 0;
 
         function selectedMode() {
@@ -964,6 +1012,24 @@ $defaultCookieDomain = $defaults['cookie_domain'];
             }
           }
 
+          if (currentStep === 2) {
+            const password = document.getElementById('admin_password');
+            const passwordConfirm = document.getElementById('admin_password_confirm');
+            const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+
+            if (password && !passwordPattern.test(password.value)) {
+              showError('Das Admin-Passwort muss mind. 8 Zeichen, Gross-/Kleinbuchstaben, Zahlen und Sonderzeichen enthalten.');
+              password.focus();
+              return false;
+            }
+
+            if (password && passwordConfirm && password.value !== passwordConfirm.value) {
+              showError('Die Admin-Passwoerter stimmen nicht ueberein.');
+              passwordConfirm.focus();
+              return false;
+            }
+          }
+
           return true;
         }
 
@@ -975,6 +1041,37 @@ $defaultCookieDomain = $defaults['cookie_domain'];
           if (successBox) {
             successBox.style.display = 'none';
           }
+        }
+
+        function showSuccess(message) {
+          if (successBox) {
+            successBox.style.display = 'block';
+            successBox.textContent = message;
+          }
+          if (errorBox) {
+            errorBox.style.display = 'none';
+          }
+        }
+
+        function runDatabaseCheck() {
+          const formData = new FormData(form);
+
+          if (dbCheckButton) {
+            dbCheckButton.disabled = true;
+            dbCheckButton.textContent = 'Datenbank wird vorbereitet ...';
+          }
+
+          return postAction('validate-db', formData)
+            .then((payload) => {
+              showSuccess(payload.message || 'Datenbank erfolgreich vorbereitet.');
+              return payload;
+            })
+            .finally(() => {
+              if (dbCheckButton) {
+                dbCheckButton.disabled = false;
+                dbCheckButton.textContent = 'DB pruefen und vorbereiten';
+              }
+            });
         }
 
         function clearMessages() {
@@ -990,12 +1087,32 @@ $defaultCookieDomain = $defaults['cookie_domain'];
 
         modeInputs.forEach((input) => input.addEventListener('change', syncModeFields));
         form.querySelectorAll('input, select').forEach((field) => field.addEventListener('input', updateSummary));
-
-        nextButton?.addEventListener('click', () => {
+        dbCheckButton?.addEventListener('click', () => {
           clearMessages();
           if (!validateCurrentStep()) {
             return;
           }
+
+          runDatabaseCheck().catch((error) => {
+            showError(error.message);
+          });
+        });
+
+        nextButton?.addEventListener('click', async () => {
+          clearMessages();
+          if (!validateCurrentStep()) {
+            return;
+          }
+
+          if (currentStep === 1) {
+            try {
+              await runDatabaseCheck();
+            } catch (error) {
+              showError(error.message);
+              return;
+            }
+          }
+
           currentStep = Math.min(currentStep + 1, panels.length - 1);
           renderStep();
         });
@@ -1021,12 +1138,9 @@ $defaultCookieDomain = $defaults['cookie_domain'];
 
           postAction('install', formData)
             .then((payload) => {
-              if (successBox) {
-                successBox.style.display = 'block';
-                successBox.textContent = 'Installation abgeschlossen. Die Seite wird neu geladen ...';
-              }
+              showSuccess('Installation abgeschlossen. Weiterleitung zum Admin-Login ...');
               window.setTimeout(() => {
-                window.location.href = payload.result?.urls?.user || window.location.pathname;
+                window.location.href = payload.result?.redirect_url || payload.result?.urls?.admin || payload.result?.urls?.user || window.location.pathname;
               }, 900);
             })
             .catch((error) => {
