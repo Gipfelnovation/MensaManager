@@ -93,4 +93,4 @@ Das System ist nach dem Prinzip "Zero Trust" (Backend vertraut keinen Client-Ein
 Dieses Projekt verwendet Open-Source-Bibliotheken von Drittanbietern. Die jeweiligen Urheberrechte und Lizenzbedingungen liegen bei den ursprünglichen Autoren. Die vollständigen Lizenztexte befinden sich in den jeweiligen Verzeichnissen im `api/`-Ordner oder können über die Projektseiten eingesehen werden:
 
 * **[PHPMailer](https://github.com/PHPMailer/PHPMailer)** Lizenziert unter der GNU Lesser General Public License (LGPL).
-* **[PayPal Server SDK](https://github.com/paypal/paypal-server-sdk-php)** Lizenziert unter der MIT License.
+* **[PayPal Server SDK](https://github.com/paypal/PayPal-PHP-Server-SDK)** Lizenziert unter der MIT License.
