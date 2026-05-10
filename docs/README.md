@@ -1,9 +1,9 @@
 
 # MensaPay & MensaManager - Dokumentation
 
-Willkommen in der offiziellen Dokumentation für das **MensaPay & MensaManager** Projekt. Diese Dokumentation richtet sich sowohl an Endanwender und Administratoren (Frontend-Nutzung) als auch an Entwickler (technische Backend-Details).
+Willkommen in der offiziellen Dokumentation für das **MensaManager** Projekt. Diese Dokumentation richtet sich sowohl an Endanwender und Administratoren (Frontend-Nutzung) als auch an Entwickler (technische Backend-Details).
 
-Das System digitalisiert die Bestellung und Bezahlung der Schulverpflegung am Gymnasium Hohenschwangau. Es bietet ein intuitives Portal für Eltern zur Verwaltung von Guthaben und Abonnements sowie einen umfassenden Administrationsbereich für die Schule.
+Das System digitalisiert die Bestellung und Bezahlung der Schulverpflegung in der Mensa. Es bietet ein intuitives Portal für Eltern zur Verwaltung von Guthaben und Abonnements sowie einen umfassenden Administrationsbereich für die Schule.
 
 ## 📚 Inhaltsverzeichnis
 
@@ -38,6 +38,3 @@ Das Backend ist modular aufgebaut. Da jedes Interface über eigene Berechtigungs
 -   **Datenbank:** MySQL / MariaDB
     
 -   **Zahlungsanbieter:** PayPal Server-SDK, Klarna Payments API
-    
-
-_Erstellt für das Gymnasium Hohenschwangau._
