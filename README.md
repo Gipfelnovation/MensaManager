@@ -87,3 +87,10 @@ Das System ist nach dem Prinzip "Zero Trust" (Backend vertraut keinen Client-Ein
 # Contributing & Lizenz
 - Contributions: Issues und PRs über GitHub; Branch-Policy: `main` = produktiv, Feature-Branches nach `feature/<ticket>`.
 - Dieses Projekt ist lizenziert unter der **GNU GPLv3**. Weitere Details findest du in der [LICENSE](LICENSE) Datei in diesem Repository.
+
+## Drittanbieter-Software (Third-Party Licenses)
+
+Dieses Projekt verwendet Open-Source-Bibliotheken von Drittanbietern. Die jeweiligen Urheberrechte und Lizenzbedingungen liegen bei den ursprünglichen Autoren. Die vollständigen Lizenztexte befinden sich in den jeweiligen Verzeichnissen im `api/`-Ordner oder können über die Projektseiten eingesehen werden:
+
+* **[PHPMailer](https://github.com/PHPMailer/PHPMailer)** Lizenziert unter der GNU Lesser General Public License (LGPL).
+* **[PayPal Server SDK](https://github.com/paypal/PayPal-PHP-Server-SDK)** Lizenziert unter der MIT License.
