@@ -1,5 +1,5 @@
 
-# MensaPay & MensaManager
+# MensaManager
 
 Ein integriertes System zur Verwaltung der Schulverpflegung — Benutzerportal für Eltern/Schüler und Administrationsbereich für die Schule. Unterstützt Mensa-Abos, Prepaid-Guthaben und physische Chipkartenverwaltung.
 
@@ -18,7 +18,7 @@ Ein integriertes System zur Verwaltung der Schulverpflegung — Benutzerportal f
 ---
 
 # Projektübersicht
-MensaPay digitalisiert Bestellung und Bezahlung der Schulverpflegung. Eltern verwalten Guthaben und Abonnements über ein Portal; die Schule steuert Kartenvergabe, überwacht Transaktionen und pflegt zentrale Preis-Konfigurationen. Ziel: transparente Abrechnung, geringe Verwaltungsaufwände, nachvollziehbare Transaktionen.
+MensaManager digitalisiert Bestellung und Bezahlung der Schulverpflegung. Eltern verwalten Guthaben und Abonnements über ein Portal; die Schule steuert Kartenvergabe, überwacht Transaktionen und pflegt zentrale Preis-Konfigurationen. Ziel: transparente Abrechnung, geringe Verwaltungsaufwände, nachvollziehbare Transaktionen.
 
 ➡️ [Zur vollständigen Dokumentation](/docs/README.md)
 
