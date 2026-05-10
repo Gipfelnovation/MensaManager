@@ -86,4 +86,4 @@ Das System ist nach dem Prinzip "Zero Trust" (Backend vertraut keinen Client-Ein
 
 # Contributing & Lizenz
 - Contributions: Issues und PRs über GitHub; Branch-Policy: `main` = produktiv, Feature-Branches nach `feature/<ticket>`.
-- Lizenz: GNU GPLv3.
+- Dieses Projekt ist lizenziert unter der **GNU GPLv3**. Weitere Details findest du in der [LICENSE](LICENSE) Datei in diesem Repository.
