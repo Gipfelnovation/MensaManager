@@ -1,7 +1,7 @@
 
 # 🧑‍💻 Benutzerinterface (Eltern & Schüler)
 
-Willkommen in der Anleitung für das MensaPay-Benutzerportal. Dieses Interface wurde speziell für Eltern und Schüler entwickelt, um die Schulverpflegung einfach, transparent und bargeldlos zu verwalten.
+Willkommen in der Anleitung für das MensaManager-Benutzerportal. Dieses Interface wurde speziell für Eltern und Schüler entwickelt, um die Schulverpflegung einfach, transparent und bargeldlos zu verwalten.
 
 ## 1. Registrierung & Login
 
